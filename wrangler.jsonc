@@ -1,6 +1,6 @@
 {
     "$schema": "./node_modules/wrangler/config-schema.json",
-    "name": "loginflare",
+    "name": "vrclearn-loginflare",
     "main": "src/server/index.ts",
     "compatibility_date": "2026-10-26",
     "compatibility_flags": [
@@ -31,12 +31,13 @@
     },
     "ratelimits": [{ "name": "REQUEST_LIMITER", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }],
     "vars": {
-        "APP_ENV": "production"
+        "APP_ENV": "production",
+        "LOGINFLARE_UPDATE_REPOSITORY": "VRCLearn/VRCLearn-Auth"
     },
     "d1_databases": [
         {
             "binding": "DB",
-            "database_name": "loginflare",
+            "database_name": "vrclearn-loginflare",
             "migrations_dir": "migrations"
         }
     ],
@@ -48,11 +49,11 @@
     "r2_buckets": [
         {
             "binding": "AVATARS",
-            "bucket_name": "loginflare-avatars"
+            "bucket_name": "vrclearn-loginflare-avatars"
         },
         {
             "binding": "PRIVATE",
-            "bucket_name": "loginflare-private"
+            "bucket_name": "vrclearn-loginflare-private"
         }
     ],
     "workers_dev": true,
