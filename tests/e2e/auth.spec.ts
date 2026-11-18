@@ -1,5 +1,5 @@
 import { testOrigin } from './runtime';
-import { expect, test, switchArea, installOfflineRoutes } from './fixtures';
+import { expect, test, switchArea, installOfflineRoutes, openNavigation } from './fixtures';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { snapshotEmails, waitForCode, waitForMail } from './mailbox';
@@ -98,6 +98,7 @@ test('completes registration, recovery, account management, and administrator co
     expect((await page.request.get('/api/admin/users?limit=1')).status()).toBe(403);
     await page.goto('/en-us/account');
     await page.setViewportSize({ width: 375, height: 812 });
+    await openNavigation(page);
     await expect(accountNavigation).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('account-mobile-en-us.png'), fullPage: true });
@@ -158,6 +159,7 @@ test('completes registration, recovery, account management, and administrator co
     await page.goto('/zh-cn/account');
     await expect(page.getByRole('heading', { name: '个人资料', exact: true })).toBeVisible();
     await page.setViewportSize({ width: 375, height: 812 });
+    await openNavigation(page);
     await expect(page.getByRole('navigation', { name: '账号导航', exact: true }).getByRole('link')).toHaveCount(5);
     await expect(page.getByRole('navigation', { name: '管理导航', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^切换区域:/ })).toHaveAccessibleName('切换区域: 账号中心');
@@ -165,8 +167,11 @@ test('completes registration, recovery, account management, and administrator co
     await page.screenshot({ path: test.info().outputPath('profile-mobile-zh-cn.png') });
     await page.setViewportSize({ width: 1280, height: 720 });
 
+    await openNavigation(page);
+
     await page.getByRole('link', { name: '登录会话', exact: true }).click();
     await expect(page.getByText('当前会话', { exact: true })).toBeVisible();
+    await openNavigation(page);
     await page.getByRole('link', { name: '安全', exact: true }).click();
     await expect(page.getByLabel('新密码', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('确认密码', { exact: true })).toHaveCount(0);
@@ -231,14 +236,15 @@ test('completes registration, recovery, account management, and administrator co
     await switchArea(page, 'Administration');
     await expect(page).toHaveURL('/en-us/admin/users');
     const administrationNavigation = page.getByRole('navigation', { name: 'Administration navigation', exact: true });
-    await expect(administrationNavigation.getByRole('link')).toHaveCount(9);
+    await expect(administrationNavigation.getByRole('link')).toHaveCount(10);
+    await expect(administrationNavigation.getByRole('group')).toHaveCount(4);
     await expect(administrationNavigation.getByRole('link', { name: 'Users', exact: true })).toBeVisible();
     await expect(administrationNavigation.getByRole('link', { name: 'Applications', exact: true })).toBeVisible();
     await expect(administrationNavigation.getByRole('link', { name: 'API resources', exact: true })).toBeVisible();
-    await expect(administrationNavigation.getByRole('link', { name: 'Business roles', exact: true })).toBeVisible();
+    await expect(administrationNavigation.getByRole('group', { name: 'Access control', exact: true }).getByRole('link', { name: 'Roles', exact: true })).toBeVisible();
     await expect(administrationNavigation.getByRole('link', { name: 'Audit logs', exact: true })).toBeVisible();
-    await expect(administrationNavigation.getByRole('link', { name: 'Machine applications', exact: true })).toBeVisible();
-    await expect(administrationNavigation.getByRole('link', { name: 'Machine roles', exact: true })).toBeVisible();
+    await expect(administrationNavigation.getByRole('link', { name: 'Webhooks', exact: true })).toHaveAttribute('href', '/en-us/admin/webhooks');
+    await expect(administrationNavigation.getByRole('link', { name: 'Service applications', exact: true })).toBeVisible();
     await expect(accountNavigation).toHaveCount(0);
     await switchArea(page, 'Account center');
     await expect(page).toHaveURL('/en-us/account');
@@ -246,9 +252,11 @@ test('completes registration, recovery, account management, and administrator co
     await expect(administrationNavigation).toHaveCount(0);
     await switchArea(page, 'Administration');
     await page.setViewportSize({ width: 375, height: 812 });
+    await openNavigation(page);
     await expect(administrationNavigation).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('admin-mobile-en-us.png'), fullPage: true });
+    await openNavigation(page);
     await administrationNavigation.getByRole('link', { name: 'Applications', exact: true }).click();
     await expect(page).toHaveURL('/en-us/admin/applications');
     await page.getByRole('link', { name: 'Loginflare', exact: true }).click();
@@ -259,12 +267,17 @@ test('completes registration, recovery, account management, and administrator co
     await expect(page.getByRole('button', { name: /^切换区域:/ })).toHaveAccessibleName('切换区域: 管理后台');
     await page.goto('/zh-cn/admin');
     await expect(page).toHaveURL('/zh-cn/admin/users');
-    await expect(page.getByRole('navigation', { name: '管理导航', exact: true }).getByRole('link')).toHaveCount(9);
+    const chineseAdministrationNavigation = page.getByRole('navigation', { name: '管理导航', exact: true });
+    await openNavigation(page);
+    await expect(chineseAdministrationNavigation.getByRole('link')).toHaveCount(10);
+    await expect(chineseAdministrationNavigation.getByRole('group', { name: '访问控制', exact: true }).getByRole('link', { name: '角色', exact: true })).toBeVisible();
+    await expect(chineseAdministrationNavigation.getByRole('link', { name: '业务事件通知', exact: true })).toHaveAttribute('href', '/zh-cn/admin/webhooks');
     await expect(page.getByRole('navigation', { name: '账号导航', exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('admin-mobile-zh-cn.png'), fullPage: true });
     await switchArea(page, '账号中心');
     await expect(page).toHaveURL('/zh-cn/account');
+    await openNavigation(page);
     await expect(page.getByRole('navigation', { name: '账号导航', exact: true }).getByRole('link')).toHaveCount(5);
     await switchArea(page, '管理后台');
     await expect(page).toHaveURL('/zh-cn/admin/users');
@@ -287,6 +300,8 @@ test('completes registration, recovery, account management, and administrator co
     await targetPage.getByRole('button', { name: 'Create account', exact: true }).click();
     await expect(targetPage.getByRole('heading', { name: 'Check your inbox' })).toBeVisible();
     await targetContext.close();
+
+    await openNavigation(page);
 
     await page.getByRole('link', { name: 'Users', exact: true }).click();
     await page.getByLabel('Find a user', { exact: true }).fill(targetEmail.toUpperCase());

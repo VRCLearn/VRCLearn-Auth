@@ -1,4 +1,5 @@
 import { hashPassword } from 'better-auth/crypto';
+import { isAPIError } from 'better-auth/api';
 import { z } from 'zod';
 import { validateConfig, type Env } from './config';
 import { sendInstallationMail } from './mail';
@@ -110,10 +111,10 @@ async function loadMaterial(env: Env, row: Installation) {
 }
 
 const materialCache = new WeakMap<R2Bucket, { fingerprint: string; until: number; value: Promise<Material> }>();
-export async function instanceEnv(env: Env, row: Installation): Promise<Env> {
+export async function instanceEnv(env: Env, row: Installation, fresh = false): Promise<Env> {
     if (!row.fingerprint || !env.PRIVATE) throw new SetupError('INSTANCE_KEYS_MISSING', 503);
     const current = materialCache.get(env.PRIVATE);
-    const value = current?.fingerprint === row.fingerprint && current.until > Date.now() ? current.value
+    const value = !fresh && current?.fingerprint === row.fingerprint && current.until > Date.now() ? current.value
         : loadMaterial(env, row).then(({ value }) => value);
     if (value !== current?.value) {
         materialCache.set(env.PRIVATE, { fingerprint: row.fingerprint, until: Date.now() + 30_000, value });
@@ -288,9 +289,10 @@ async function invite(env: Env, row: Installation, locale: z.infer<typeof locale
     if (!reserved) return; // A live invitation remains valid when other visitors request another.
     try {
         await sendInstallationMail(env, row.adminEmail, token, locale);
-    } catch {
+    } catch (error) {
         await env.DB.prepare(`UPDATE lfInstallation SET invitationHash = NULL, invitationExpiresAt = NULL
             WHERE id = 1 AND invitationHash = ? AND completedAt IS NULL`).bind(proof).run();
+        if (isAPIError(error) && error.statusCode === 429) throw error;
         throw new SetupError('EMAIL_DELIVERY_FAILED', 503);
     }
 }
@@ -318,7 +320,7 @@ export async function handleSetup(request: Request, env: Env, row: Installation 
     try {
         if (path === '/api/setup/status' && request.method === 'GET') {
             const canonical = url.origin === row?.origin;
-            const { name, logoUrl } = publicBranding(await readBranding(env.DB));
+            const { name, logoUrl } = publicBranding(await readBranding(env.DB), env);
             return json({ step: row?.step ?? 'target', canonical, branding: { name, logoUrl },
                 publicUrl: row?.step === 'ready' ? row.origin : undefined, completed: Boolean(row?.completedAt),
                 error: row?.error ?? undefined, detail: row?.errorDetail ?? undefined,
@@ -345,6 +347,7 @@ export async function handleSetup(request: Request, env: Env, row: Installation 
         return json({ code: 'NOT_FOUND' }, 404);
     } catch (error) {
         if (error instanceof SetupError) return json({ code: error.code, detail: error.detail }, error.status);
+        if (isAPIError(error) && error.statusCode === 429) return json({ code: 'TOO_MANY_REQUESTS' }, 429, { 'Retry-After': String(error.body?.retryAfter ?? 60) });
         return json({ code: 'INSTALLATION_UNAVAILABLE' }, 503);
     }
 }

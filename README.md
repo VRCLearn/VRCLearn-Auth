@@ -4,18 +4,29 @@ An open-source account and identity management system built for Cloudflare.
 
 [简体中文](README.zh-CN.md) · [Deployment](docs/deployment.md) · [Application integration](docs/oauth.md) · [Architecture](docs/architecture.md) · [Scaling](docs/scaling.md)
 
+Start with [deployment](docs/deployment.md), then connect a [Hono/Workers Web app](examples/server-web/README.md) or [React SPA](docs/oauth.md#standard-client-examples). Production needs an active Cloudflare zone, Workers Paid, R2, transactional Email Service and Turnstile. These services' usage and the connected applications' resources determine operating cost. Review [operations and recovery](docs/operations.md), [capacity boundaries](docs/scaling.md) and [security reporting](SECURITY.md) before rollout. Organizations, SAML and native/device clients are outside this release; see the feature boundary below.
+
 Loginflare is a fully functional account and identity management platform for independent deployments, from small teams to large public-facing services. It combines a user account center, a developer center, an administrator console, and standard OAuth/OIDC sign-in for independent Web and SPA applications, with email or username sign-in, email verification, password recovery, and session management. The system runs as one Cloudflare Worker with D1, R2, Email Service, Turnstile, and Workers Static Assets.
 
 Deploy an independent instance of Loginflare through Cloudflare. The management console requires administrator access. The Web/SPA examples exercise the complete integration flows. Business-specific applications can build on this project in separate branches with their own branding and rules.
 
 The default language is **`en-US`**. Users can select **`zh-CN`**. Page URLs use lowercase language segments: `/en-us/` and `/zh-cn/`.
 
+## Where to start
+
+| Your task | Shortest path |
+| --- | --- |
+| Run your own account service | Follow [deployment](docs/deployment.md), receive the setup email and create the first administrator. |
+| Add sign-in to a website or frontend | Follow [Connect your first application](docs/oauth.md#connect-your-first-application): choose Web or SPA in the Developer center, configure callbacks and run its example. Account sign-in needs no permission model setup. |
+| Manage your own account | After signing in, open Account center: Profile for your name, username and avatar; Emails for login addresses; Security for passwords, passkeys and an authenticator; Sessions and Authorized applications to revoke access. See [Account behavior](#account-behavior). |
+
 ## Features
 
 - Register, verify email, resend verification, sign in with an email address or username, and sign out.
 - Configure Google, GitHub, Microsoft, Discord, X, Telegram, OIDC and OAuth 2.0 connections; support passwordless registration, explicit linking and third-party reauthentication. See [Third-party sign-in](docs/social.md).
 - Recover a forgotten password and change a known password.
-- Enable authenticator-based MFA (TOTP), save or reset one-use recovery codes, and verify email/username and OAuth sign-ins.
+- Enable authenticator-based MFA (TOTP), save or reset one-use recovery codes, and verify email/username, provider, passkey and OAuth sign-ins.
+- Add, name and manage passkeys after reauthentication, and use them to sign in; see [Passkeys](docs/passkeys.md).
 - Update a display name and username, upload/crop/remove a profile photo, and manage active sessions.
 - Sign in to up to five accounts in one browser, switch accounts independently in each tab, and sign out of one account or all browser accounts.
 - Manage primary and secondary email addresses on a dedicated page, verify new addresses with codes, and choose the primary sign-in email.
@@ -25,11 +36,14 @@ The default language is **`en-US`**. Users can select **`zh-CN`**. Page URLs use
 - OpenID Connect sign-in using authorization code + PKCE S256, discovery, UserInfo, RS256 ID Tokens, refresh tokens, and application-initiated central logout.
 - Manage API resources, business permission scopes, roles and user assignments; issue resource-bound access tokens and protect Workers/Hono APIs. See [Access control](docs/access-control.md).
 - Inspect administrator-only audit logs for authentication, authorization, security and management events, with bounded retention.
-- Create separate machine applications and machine roles, obtain short-lived client-credentials tokens, and automate the versioned Management API. See [Machine identities and management](docs/management-api.md).
+- Configure signed asynchronous account Webhooks, inspect deliveries and redeliver retained events; see [Business event notifications](docs/webhooks.md).
+- Create separate service applications and service roles (machine identities), obtain short-lived client-credentials tokens, and automate the versioned Management API. See [Machine identities and management](docs/management-api.md).
 - English and Simplified Chinese pages, error messages, and transactional emails.
 - Better Auth account/session primitives, atomic D1-backed rate limiting, scheduled expiry cleanup, and server-verified Turnstile challenges.
 
-This release does not offer organizations, multi-tenancy, SAML, account deletion, browser-based assignment of Loginflare console administrator privileges, impersonation, or administrator-set passwords. Native/device clients, dynamic client registration, upstream API token hosting and coordinated logout across all applications are also outside its scope. Those endpoints are not exposed. User business roles, machine roles and console administrator privileges are separate.
+Ordinary users can request permanent deletion under **Security → Delete account**, after reauthentication and confirmation of every owned application's deletion. The account and its applications become unavailable immediately; durable background cleanup removes their data and all users' grants for those applications. See [Account deletion](docs/account-deletion.md) for authentication, retention and API behavior.
+
+This release does not offer organizations, multi-tenancy, SAML, browser-based assignment of Loginflare console administrator privileges, impersonation, or administrator-set passwords. Native/device clients, dynamic client registration, upstream API token hosting and coordinated logout across all applications are also outside its scope. Those endpoints are not exposed. User roles, service roles and console administrator privileges are separate. Administrator self-deletion, administrator/machine account deletion and application ownership transfer are not exposed.
 
 Usernames are separate from display names. The registration form asks for a unique username of 3–30 ASCII letters, numbers, underscores, or dots; usernames are stored in lowercase and sign-in is case-insensitive. Existing accounts can continue using email and choose a username in their profile. Users can change their username; an existing username cannot be cleared. Email verification is required for both sign-in methods. Only the primary email works as an email sign-in identifier.
 
@@ -43,7 +57,7 @@ Set up MFA on the account center's **Security** page after confirming your curre
 
 Administrators manage deployment-wide branding at `/en-us/admin/branding`. The logo is an independent image and the brand name remains editable text. Logo and avatar selection share a preview, crop, zoom, rotation and confirmation workflow. Logo crops and exported images are fixed squares; SVG adjustments preserve vector geometry, and static PNG, JPG and WebP sources are encoded as WebP before upload. A source color and one of nine Material scheme variants generate 49 matching light/dark color roles, with Tonal Spot as the default. Saving updates site branding, browser metadata and transactional email branding without changing issuer, user IDs or OAuth client IDs. See [branding architecture](docs/architecture.md#branding).
 
-Profile photos use a private R2 bucket and Better Auth's existing `user.image` field. Choose a static JPG, PNG or WebP image up to 20 MiB in the account center, then drag, zoom or rotate it inside the circular crop frame. Mouse, touch and keyboard controls share the same preview. The initial/minimum zoom fills the crop frame exactly; dragging stays within the image bounds. The browser creates a 256-pixel square from the original and encodes the visible composition as WebP before upload; the Worker accepts only WebP, checks its dimensions and size and strips metadata. Header/profile photos, user management and OIDC `picture` claims share that address. Photo changes invalidate the existing account/admin caches across tabs. See [avatar storage and lifecycle](docs/architecture.md#avatars) and the [deployment prerequisites](docs/deployment.md).
+Profile photos use a dedicated R2 media bucket and Better Auth's existing `user.image` field. Public reads can optionally use an [R2 image domain](docs/public-media.md); authentication keys remain in a separate private bucket. Choose a static JPG, PNG or WebP image up to 20 MiB in the account center, then drag, zoom or rotate it inside the circular crop frame. Mouse, touch and keyboard controls share the same preview. The initial/minimum zoom fills the crop frame exactly; dragging stays within the image bounds. The browser creates a 256-pixel square from the original and encodes the visible composition as WebP before upload; the Worker accepts only WebP, checks its dimensions and size and strips metadata. Header/profile photos, user management and OIDC `picture` claims share that address. Photo changes invalidate the existing account/admin caches across tabs. See [avatar storage and lifecycle](docs/architecture.md#avatars) and the [deployment prerequisites](docs/deployment.md).
 
 The account center, developer center and administrator console use separate navigation. Profile, email, security, active sessions and authorized applications stay in the account center. Under **Authorized applications**, users review permissions and revoke an application's consent and OAuth credentials; using it again requires consent. Verified accounts create and configure their own applications in the developer center. The administrator console lists all applications and their developers, links to user management, and restricts or restores application access; its application details are read-only. Ordinary users cannot enter the administrator console.
 
@@ -102,7 +116,7 @@ Database migrations prepare native dates as ISO UTC text, populate indexed callb
 
 ## Validation
 
-`pnpm check` runs type checking, Worker integration tests, operator-command tests, and the production build. Run `pnpm test:e2e` as well to exercise the browser flows. The [CI workflow](.github/workflows/ci.yml) runs both on pull requests and pushes to `main`, plus isolated scale checks with 10 and 10,000 generated users and three-second workload windows. Tests use local D1, simulated email, and Turnstile test keys; browser reports are retained for seven days. The million-user benchmark remains a separate manual run.
+`pnpm check` runs type checking, Worker integration tests, operator-command tests, the production build, the React SPA build and local dry-run bundles of the Web, webhook-receiver and audit-export Workers. Run `pnpm test:e2e` as well to exercise the browser flows. The [CI workflow](.github/workflows/ci.yml) runs both on pull requests and pushes to `main`, plus isolated scale checks with 10 and 10,000 generated users and three-second workload windows. Tests use local D1, simulated email, and Turnstile test keys; browser reports are retained for seven days. The million-user benchmark remains a separate manual run.
 
 ```powershell
 pnpm typecheck
@@ -145,9 +159,13 @@ For a business API, an administrator registers its audience, permission scopes, 
 
 Trusted backend automation uses a separately configured machine application. The [Management API](docs/management-api.md) exposes scoped user, login-application, business-access and audit operations under `/api/management/v1`, with a public OpenAPI contract. The [scheduled Worker example](examples/management-worker/README.md) polls audit logs with a read-only token and exports provisioning helpers without an unauthenticated operation trigger.
 
+The [webhook receiver](examples/webhook-receiver/README.md) verifies account notifications into a durable inbox. The separate [audit exporter](examples/audit-export/README.md) copies allowlisted audit records with persistent continuation and deduplication; source retention and bounded polling still limit completeness.
+
 Ordinary central logout retains native `offline_access` refresh authorization. Applications own their local sessions; logging out of Loginflare does not sign every application out. Security actions such as password recovery and account suspension have separate credential-invalidation rules described in the integration guide.
 
 ## Browser data and navigation
+
+On narrow screens, select **Navigation** to expand the current area's pages. Navigating to another page collapses it; desktop navigation keeps its existing groups. Administration searches match complete values exactly. Empty results show the current condition; **Clear search** returns to the list.
 
 Account and administration data share an in-memory TanStack Query cache. Ordinary reads stay fresh for 60 seconds, identity/session views for 15 seconds; stale data remains visible during background updates. Writes invalidate related views and synchronize invalidation across tabs. Inactive private results, ordinary drafts and scroll positions are bounded. SPA navigation preserves useful state; F5 fetches identity and current-page data again. Passwords, verification codes and one-time client secrets are not cached or persisted. See the [browser data contract](docs/architecture.md#browser-data-and-navigation) for navigation, error and security boundaries.
 

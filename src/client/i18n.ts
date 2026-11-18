@@ -9,8 +9,22 @@ import { resolveLocale } from './locale';
 import { browserAccountsEn, browserAccountsZh, browserAccountErrorsEn, browserAccountErrorsZh } from './browser-account-translations';
 import { accessEn, accessZh, accessErrorsEn, accessErrorsZh } from './access-translations';
 import { machinesEn, machinesZh, machineErrorsEn, machineErrorsZh } from './machine-translations';
+import { deletionEn, deletionZh, deletionErrorsEn, deletionErrorsZh } from './deletion-translations';
+import { passkeysEn, passkeysZh, passkeyErrorsEn, passkeyErrorsZh } from './passkey-translations';
+import { webhooksEn, webhooksZh, webhookErrorsEn, webhookErrorsZh } from './webhook-translations';
 
 const enUS = {
+    administration: { accounts: 'Accounts & sign-in', applications: 'Application integration', access: 'Access control', operations: 'Operations & integrations', roles: 'Roles', roleTypes: 'Role types' },
+    updates: {
+        title: 'Version updates', installed: 'Installed version {{version}}', available: 'Version {{version}} is available.',
+        current: 'You are on the latest release.', unpublished: 'No official release is available to check.', checking: 'Checking for updates…',
+        unavailable: 'Unable to check for updates right now.', details: 'View update', prepare: 'Prepare update on GitHub',
+        confirmOnGitHub: 'Select Run workflow to create a pull request for review.', releaseNotes: 'Release notes',
+        repositoryMissing: 'The installation repository was not detected. Configure its GitHub repository to prepare an update.', configure: 'Configure updates',
+    },
+    webhooks: webhooksEn,
+    passkeys: passkeysEn,
+    deletion: deletionEn,
     machines: machinesEn,
     access: accessEn,
     browserAccounts: browserAccountsEn,
@@ -149,6 +163,19 @@ const enUS = {
     searchUsers: 'Find a user',
     lookupField: 'Search by',
     exactLookupHint: 'Enter the complete value for an exact match.',
+    clearSearch: 'Clear search', noSearchResults: 'No results match this search.', searchCondition: 'Current search',
+    searchRecovery: 'Check the complete value, choose another field, or clear the search to return to the list.', emptyPage: 'No items on this page. Return to the latest page to continue.',
+    unsavedChanges: 'Unsaved changes', noChanges: 'No unsaved changes', navigationMenu: 'Navigation',
+    lookupHints: {
+        name: 'Enter the complete name for an exact match.', email: 'Enter the complete primary email address; alternate emails are not searched.',
+        username: 'Enter the complete username, not the display name.', id: 'Copy the complete account ID from the user details.',
+        clientId: 'Copy the complete client ID from the application details.', identifier: 'Enter the exact API identifier, such as https://api.example.com.',
+        event: 'Use the event code shown below its name, such as authentication.sign_in.', outcome: 'Enter success or failure (the original code, not its translated name).',
+        actorUserId: 'Copy the acting account ID from the user or event details.', actorClientId: 'Copy the service client ID from the service application or event details.',
+        targetUserId: 'Copy the affected account ID from the user or event details.',
+        status: 'Enter pending, succeeded, failed or cancelled (the original status code).',
+        subscriptionId: 'Copy the complete subscription ID from the notification or delivery details.', eventId: 'Copy the complete event ID from the delivery details.',
+    },
     search: 'Search',
     status: 'Status',
     role: 'Role',
@@ -157,6 +184,7 @@ const enUS = {
     suspended: 'Suspended',
     admin: 'Administrator',
     user: 'User',
+    userColumn: 'User',
     usersEmpty: 'No users found.',
     previous: 'Previous',
     next: 'Next',
@@ -183,6 +211,9 @@ const enUS = {
     forbiddenDescription: 'This page is available to administrators only.',
     errorTitle: 'Something needs your attention',
     tryAgain: 'Try again',
+    pageLoadTitle: 'Unable to load this page',
+    pageLoadFailure: 'Check your connection, then reload this page to try again.',
+    reloadPage: 'Reload page',
     dismissNotification: 'Dismiss notification',
     captchaLoading: 'Loading security check…',
     captchaError: 'The security check could not load. Check your connection and try again.',
@@ -191,6 +222,7 @@ const enUS = {
     passwordMismatch: 'Your passwords do not match.',
     errors: {
         UNKNOWN_ERROR: 'We couldn’t complete this request. Please try again.',
+        TURNSTILE_UNAVAILABLE: 'Security verification is temporarily unavailable. Please try again.',
         INVALID_BACKUP_CODE: 'This recovery code is invalid or has already been used.',
         INVALID_TWO_FACTOR_COOKIE: 'Your sign-in challenge expired. Sign in again to continue.',
         TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE: 'Too many attempts. Sign in again to start a new challenge.',
@@ -271,6 +303,17 @@ const enUS = {
 };
 
 const zhCN: typeof enUS = {
+    administration: { accounts: '账号与登录', applications: '应用接入', access: '访问控制', operations: '运维与集成', roles: '角色', roleTypes: '角色类型' },
+    updates: {
+        title: '版本更新', installed: '当前版本 {{version}}', available: '新版本 {{version}} 已发布。',
+        current: '当前已是最新正式版本。', unpublished: '暂无可检查的正式版本。', checking: '正在检查更新…',
+        unavailable: '暂时无法检查更新。', details: '查看更新', prepare: '前往 GitHub 准备更新',
+        confirmOnGitHub: '点击「Run workflow」创建升级 PR，供维护者审阅。', releaseNotes: '版本说明',
+        repositoryMissing: '未识别到安装仓库。设置下游 GitHub 仓库后即可准备更新。', configure: '配置更新',
+    },
+    webhooks: webhooksZh,
+    passkeys: passkeysZh,
+    deletion: deletionZh,
     machines: machinesZh,
     access: accessZh,
     browserAccounts: browserAccountsZh,
@@ -409,6 +452,19 @@ const zhCN: typeof enUS = {
     searchUsers: '查找用户',
     lookupField: '检索字段',
     exactLookupHint: '输入完整内容，进行精确匹配。',
+    clearSearch: '清除检索', noSearchResults: '没有符合此检索条件的结果。', searchCondition: '当前检索条件',
+    searchRecovery: '请核对完整内容、切换检索字段，或清除检索返回列表。', emptyPage: '本页暂无记录，请返回最新一页继续查看。',
+    unsavedChanges: '有未保存的更改', noChanges: '没有未保存的更改', navigationMenu: '导航',
+    lookupHints: {
+        name: '输入完整名称，进行精确匹配。', email: '输入完整主邮箱地址，不检索辅助邮箱。',
+        username: '输入完整用户名，不是显示名称。', id: '从用户详情复制完整账号 ID。',
+        clientId: '从应用详情复制完整客户端 ID。', identifier: '输入精确的 API 标识，例如 https://api.example.com。',
+        event: '输入事件名称下方的原始事件码，例如 authentication.sign_in。', outcome: '输入 success 或 failure，不能使用翻译后的状态名称。',
+        actorUserId: '从用户或事件详情复制操作账号 ID。', actorClientId: '从服务应用或事件详情复制服务客户端 ID。',
+        targetUserId: '从用户或事件详情复制受影响账号 ID。',
+        status: '输入原始状态码 pending、succeeded、failed 或 cancelled。',
+        subscriptionId: '从通知或投递详情复制完整订阅 ID。', eventId: '从投递详情复制完整事件 ID。',
+    },
     search: '搜索',
     status: '状态',
     role: '角色',
@@ -417,6 +473,7 @@ const zhCN: typeof enUS = {
     suspended: '已停用',
     admin: '管理员',
     user: '普通用户',
+    userColumn: '用户',
     usersEmpty: '未找到用户。',
     previous: '上一页',
     next: '下一页',
@@ -443,6 +500,9 @@ const zhCN: typeof enUS = {
     forbiddenDescription: '只有管理员可以访问此页面。',
     errorTitle: '请留意',
     tryAgain: '重试',
+    pageLoadTitle: '页面未能加载',
+    pageLoadFailure: '请检查网络连接，然后重新加载此页面。',
+    reloadPage: '重新加载页面',
     dismissNotification: '关闭提示',
     captchaLoading: '正在加载安全验证…',
     captchaError: '安全验证加载失败，请检查网络后重试。',
@@ -451,6 +511,7 @@ const zhCN: typeof enUS = {
     passwordMismatch: '两次输入的密码不一致。',
     errors: {
         UNKNOWN_ERROR: '无法完成此请求，请重试。',
+        TURNSTILE_UNAVAILABLE: '安全验证服务暂时不可用，请稍后重试。',
         INVALID_BACKUP_CODE: '此恢复码无效或已使用。',
         INVALID_TWO_FACTOR_COOKIE: '登录验证已过期，请返回重新登录。',
         TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE: '尝试次数过多，请返回重新登录以开始新的验证。',
@@ -539,6 +600,12 @@ Object.assign(enUS.errors, accessErrorsEn);
 Object.assign(zhCN.errors, accessErrorsZh);
 Object.assign(enUS.errors, machineErrorsEn);
 Object.assign(zhCN.errors, machineErrorsZh);
+Object.assign(enUS.errors, deletionErrorsEn);
+Object.assign(enUS.errors, passkeyErrorsEn);
+Object.assign(enUS.errors, webhookErrorsEn);
+Object.assign(zhCN.errors, webhookErrorsZh);
+Object.assign(zhCN.errors, passkeyErrorsZh);
+Object.assign(zhCN.errors, deletionErrorsZh);
 document.documentElement.lang = initialLocale;
 
 void i18n.use(initReactI18next).init({

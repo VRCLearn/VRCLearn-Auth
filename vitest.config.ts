@@ -1,7 +1,10 @@
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import { loadRelease } from './scripts/release-manifest.mjs';
+const { bundle } = loadRelease(process.cwd());
 
 export default defineConfig({
+    define: { __LOGINFLARE_MIGRATIONS__: JSON.stringify(bundle.migrations.map(({ name, hash }) => ({ name, digest: hash }))) },
     plugins: [
         cloudflareTest(async () => ({
             main: './src/server/index.ts',
@@ -10,6 +13,7 @@ export default defineConfig({
                 compatibilityFlags: ['nodejs_compat'],
                 d1Databases: ['DB'],
                 r2Buckets: ['AVATARS', 'PRIVATE'],
+                ratelimits: { REQUEST_LIMITER: { namespace_id: '1001', simple: { limit: 600, period: 60 } } },
                 bindings: {
                     APP_ENV: 'development',
                     AUTH_URL: 'http://localhost:5173',

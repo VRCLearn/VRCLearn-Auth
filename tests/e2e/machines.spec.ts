@@ -11,6 +11,7 @@ async function machineFixture(context: BrowserContext, administrator = true) {
     type Application = { clientId: string; name: string; disabled: boolean; createdAt: string; roleIds: string[] };
     type Role = { id: string; name: string; description: string; createdAt: string; permissionIds: string[]; managementScopes: string[] };
     const permission = { id: randomUUID(), resourceId: randomUUID(), scope: 'orders:read', name: 'Read orders', description: '', resourceName: 'Orders' };
+    const permissions = [permission];
     const applications: Application[] = [], roles: Role[] = [], writes: { path: string; method: string; body: Record<string, unknown> | undefined }[] = [];
     const state = { secretNumber: 0, revocations: 0, pendingCreate: undefined as Promise<void> | undefined };
     const managementScopes = ['management:users:read', 'management:users:write', 'management:applications:read', 'management:applications:write', 'management:resources:read', 'management:resources:write', 'management:roles:read', 'management:roles:write', 'management:role-assignments:read', 'management:role-assignments:write', 'management:audit:read'];
@@ -31,7 +32,7 @@ async function machineFixture(context: BrowserContext, administrator = true) {
         else if (path.startsWith('/api/admin/machines')) {
             const parts = path.slice('/api/admin/machines/'.length).split('/');
             if (method !== 'GET') writes.push({ path, method, body });
-            if (parts[0] === 'permissions') json = { permissions: [permission], managementScopes, managementResource };
+            if (parts[0] === 'permissions') json = { permissions, managementScopes, managementResource };
             else if (parts[0] === 'applications' && parts.length === 1 && method === 'GET') json = { ...page(applications), issuer, managementResource };
             else if (parts[0] === 'applications' && parts.length === 1 && method === 'POST') {
                 await state.pendingCreate;
@@ -58,13 +59,13 @@ async function machineFixture(context: BrowserContext, administrator = true) {
         }
         await route.fulfill({ status, json }).catch(() => {});
     });
-    return { identity, applications, roles, permission, writes, state, actorClientId };
+    return { identity, applications, roles, permission, permissions, writes, state, actorClientId };
 }
 
 for (const [language, width] of [['en-us', 1280], ['zh-cn', 375]] as const) test(`manages machine identities and roles with one-time secrets in ${language}`, async ({ page, context }) => {
     const fixture = await machineFixture(context), zh = language === 'zh-cn';
-    const text = zh ? { createRole: '创建机器角色', roleName: '角色名称', save: '保存修改', createApplication: '创建机器应用', applicationName: '应用名称', secret: '客户端密钥', secretSaved: '我已保存密钥', assignRoles: '分配机器角色', rotate: '轮换客户端密钥', revoke: '撤销访问令牌', disable: '停用机器应用', enable: '启用机器应用', confirm: '确认', cancel: '取消', duplicate: '此名称已被使用。', managementPermission: '读取用户 (management:users:read)' }
-        : { createRole: 'Create machine role', roleName: 'Role name', save: 'Save changes', createApplication: 'Create machine application', applicationName: 'Application name', secret: 'Client secret', secretSaved: 'I have saved the secret', assignRoles: 'Assign machine roles', rotate: 'Rotate client secret', revoke: 'Revoke access tokens', disable: 'Disable machine application', enable: 'Enable machine application', confirm: 'Confirm', cancel: 'Cancel', duplicate: 'This name is already in use.', managementPermission: 'Read users (management:users:read)' };
+    const text = zh ? { createRole: '创建服务角色', roleName: '角色名称', save: '保存修改', createApplication: '创建服务应用', applicationName: '应用名称', secret: '客户端密钥', secretSaved: '我已保存密钥', assignRoles: '分配服务角色', rotate: '轮换客户端密钥', revoke: '撤销访问令牌', disable: '停用服务应用', enable: '启用服务应用', confirm: '确认', cancel: '取消', duplicate: '此名称已被使用。', managementPermission: '读取用户 (management:users:read)' }
+        : { createRole: 'Create service role', roleName: 'Role name', save: 'Save changes', createApplication: 'Create service application', applicationName: 'Application name', secret: 'Client secret', secretSaved: 'I have saved the secret', assignRoles: 'Assign service roles', rotate: 'Rotate client secret', revoke: 'Revoke access tokens', disable: 'Disable service application', enable: 'Enable service application', confirm: 'Confirm', cancel: 'Cancel', duplicate: 'This name is already in use.', managementPermission: 'Read users (management:users:read)' };
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/${language}/admin/machines/roles`);
     await page.getByRole('button', { name: text.createRole, exact: true }).click();
@@ -72,7 +73,7 @@ for (const [language, width] of [['en-us', 1280], ['zh-cn', 375]] as const) test
     await dialog.getByLabel(text.roleName, { exact: true }).fill('Report reader');
     await dialog.getByRole('checkbox', { name: 'Orders · Read orders (orders:read)', exact: true }).check();
     await dialog.getByRole('checkbox', { name: text.managementPermission, exact: true }).check();
-    await dialog.getByRole('button', { name: text.save, exact: true }).click();
+    await dialog.getByRole('button', { name: text.createRole, exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect(fixture.roles[0].permissionIds).toEqual([fixture.permission.id]);
     expect(fixture.roles[0].managementScopes).toEqual(['management:users:read']);
@@ -80,10 +81,11 @@ for (const [language, width] of [['en-us', 1280], ['zh-cn', 375]] as const) test
     await page.getByRole('button', { name: text.createApplication, exact: true }).click();
     dialog = page.locator('md-dialog.form-dialog');
     await dialog.getByLabel(text.applicationName, { exact: true }).fill('duplicate');
-    await dialog.getByRole('button', { name: text.save, exact: true }).click();
+    await dialog.getByRole('button', { name: text.createApplication, exact: true }).click();
     await expect(dialog.getByText(text.duplicate, { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel(text.applicationName, { exact: true })).toBeFocused();
     await dialog.getByLabel(text.applicationName, { exact: true }).fill('Report service');
-    await dialog.getByRole('button', { name: text.save, exact: true }).click();
+    await dialog.getByRole('button', { name: text.createApplication, exact: true }).click();
     await expect(dialog.getByLabel(text.secret, { exact: true })).toHaveValue('isolated-machine-secret-1');
     expect(await page.evaluate(() => JSON.stringify([sessionStorage, localStorage]))).not.toContain('isolated-machine-secret');
     await dialog.getByRole('button', { name: text.secretSaved, exact: true }).click();
@@ -121,15 +123,65 @@ for (const [language, width] of [['en-us', 1280], ['zh-cn', 375]] as const) test
     await expect(page.getByLabel(text.secret, { exact: true })).toHaveCount(0);
 });
 
+for (const language of ['en-us', 'zh-cn'] as const) {
+    const chinese = language === 'zh-cn';
+    test(`guides service permissions and distinguishes target APIs in ${language}`, async ({ page, context }) => {
+        const fixture = await machineFixture(context);
+        fixture.permissions.length = 0;
+        await page.setViewportSize({ width: chinese ? 375 : 1280, height: 900 });
+        await page.goto(`/${language}/admin/machines/applications`);
+        await expect(page.getByText(chinese ? /新建服务应用没有任何权限/ : /New service applications have no permissions/)).toBeVisible();
+        await expect(page.getByRole('link', { name: chinese ? '打开服务角色' : 'Open service roles', exact: true })).toHaveAttribute('href', `/${language}/admin/machines/roles`);
+        await page.screenshot({ path: test.info().outputPath(`service-empty-${language}.png`), fullPage: true });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        fixture.applications.push({ clientId: 'B'.repeat(32), name: 'Business service', disabled: false, createdAt: new Date().toISOString(), roleIds: [] });
+        await page.goto(`/${language}/admin/machines/applications/detail?clientId=${fixture.applications[0].clientId}`);
+        await expect(page.getByText(chinese ? /调用业务 API 时，将对应资源的 API 标识作为 resource/ : /For a business API, use its API identifier as resource/)).toBeVisible();
+        await expect(page.getByLabel(chinese ? '管理 API 标识' : 'Management API identifier', { exact: true })).toHaveAccessibleDescription(chinese ? /不能作为通用的业务 API 标识/ : /It is not a general business API identifier/);
+        await expect(page.getByLabel(chinese ? '管理 API 标识' : 'Management API identifier', { exact: true })).toHaveValue('urn:loginflare:management');
+        for (const [label, document] of [[chinese ? '业务 API 令牌说明' : 'Business API token guide', 'access-control'], [chinese ? '管理 API 说明与示例' : 'Management API guide and example', 'management-api']]) {
+            await expect(page.getByRole('link', { name: label, exact: true })).toHaveAttribute('href', `https://github.com/CQMHV/loginflare/blob/main/docs/${document}${chinese ? '.zh-CN' : ''}.md`);
+        }
+        await page.screenshot({ path: test.info().outputPath(`service-api-guidance-${language}.png`), fullPage: true });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.getByRole('button', { name: chinese ? '分配服务角色' : 'Assign service roles', exact: true }).click();
+        let dialog = page.locator('md-dialog.form-dialog');
+        await expect(dialog.getByText(chinese ? /尚未创建服务角色，请先创建/ : /No service roles have been created/)).toBeVisible();
+        await expect(dialog.getByRole('link', { name: chinese ? '打开服务角色' : 'Open service roles', exact: true })).toHaveAttribute('target', '_blank');
+        await dialog.getByRole('button', { name: chinese ? '取消' : 'Cancel', exact: true }).click();
+        await page.goto(`/${language}/admin/machines/roles`);
+        await page.getByRole('button', { name: chinese ? '创建服务角色' : 'Create service role', exact: true }).click();
+        dialog = page.locator('md-dialog.form-dialog');
+        await expect(dialog.getByText(chinese ? /只调用管理 API 的服务/ : /A service that only calls the Management API/)).toBeVisible();
+        const resources = dialog.getByRole('link', { name: chinese ? '打开 API 资源' : 'Open API resources', exact: true });
+        await expect(resources).toHaveAttribute('href', `/${language}/admin/access/resources`);
+        await expect(resources).toHaveAttribute('target', '_blank');
+        await dialog.getByLabel(chinese ? '角色名称' : 'Role name', { exact: true }).fill('Management only');
+        await dialog.getByRole('checkbox', { name: chinese ? '读取用户 (management:users:read)' : 'Read users (management:users:read)', exact: true }).check();
+        await dialog.getByRole('button', { name: chinese ? '创建服务角色' : 'Create service role', exact: true }).click();
+        await expect(page.getByText('Management only', { exact: true })).toBeVisible();
+        expect(fixture.roles[0]).toMatchObject({ permissionIds: [], managementScopes: ['management:users:read'] });
+    });
+    test(`keeps permission search misses separate from absent configuration in ${language}`, async ({ page, context }) => {
+        await machineFixture(context);
+        await page.goto(`/${language}/admin/machines/roles`);
+        await page.getByRole('button', { name: chinese ? '创建服务角色' : 'Create service role', exact: true }).click();
+        const dialog = page.locator('md-dialog.form-dialog');
+        await dialog.getByLabel(chinese ? '查找 API 权限' : 'Find an API permission', { exact: true }).fill('No matching permission');
+        await expect(dialog.getByText(chinese ? '没有匹配的 API 权限。' : 'No API permissions match.', { exact: true })).toBeVisible();
+        await expect(dialog.getByRole('link', { name: chinese ? '打开 API 资源' : 'Open API resources', exact: true })).toHaveCount(0);
+    });
+}
+
 test('does not reveal a delayed machine secret after pagehide', async ({ page, context }) => {
     const fixture = await machineFixture(context);
     let release!: () => void; fixture.state.pendingCreate = new Promise((resolve) => { release = resolve; });
     try {
         await page.goto('/en-us/admin/machines/applications');
-        await page.getByRole('button', { name: 'Create machine application', exact: true }).click();
+        await page.getByRole('button', { name: 'Create service application', exact: true }).click();
         await page.getByLabel('Application name', { exact: true }).fill('Background service');
         const response = page.waitForResponse((response) => response.url().endsWith('/api/admin/machines/applications') && response.request().method() === 'POST');
-        await page.locator('md-dialog').getByRole('button', { name: 'Save changes', exact: true }).click();
+        await page.locator('md-dialog').getByRole('button', { name: 'Create service application', exact: true }).click();
         await expect.poll(() => fixture.writes.length).toBe(1);
         await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
         release(); await (await response).finished();
@@ -139,26 +191,26 @@ test('does not reveal a delayed machine secret after pagehide', async ({ page, c
     } finally { release(); }
 });
 
-test('synchronizes machine role changes across tabs and confirms deletion', async ({ page, context }) => {
-    const fixture = await machineFixture(context), role = { id: randomUUID(), name: 'Old machine role', description: '', permissionIds: [], managementScopes: [], createdAt: new Date().toISOString() };
+test('synchronizes service role changes across tabs and confirms deletion', async ({ page, context }) => {
+    const fixture = await machineFixture(context), role = { id: randomUUID(), name: 'Old service role', description: '', permissionIds: [], managementScopes: [], createdAt: new Date().toISOString() };
     fixture.roles.push(role); fixture.applications.push({ clientId: 'A'.repeat(32), name: 'Shared service', disabled: false, roleIds: [role.id], createdAt: new Date().toISOString() });
     await page.goto(`/en-us/admin/machines/applications/detail?clientId=${fixture.applications[0].clientId}`);
-    await expect(page.getByText('Old machine role', { exact: true })).toBeVisible();
+    await expect(page.getByText('Old service role', { exact: true })).toBeVisible();
     const peer = await context.newPage();
     await peer.goto('/en-us/admin/machines/roles');
-    await peer.getByRole('button', { name: 'Edit machine role: Old machine role', exact: true }).click();
-    await peer.getByLabel('Role name', { exact: true }).fill('Updated machine role');
+    await peer.getByRole('button', { name: 'Edit service role: Old service role', exact: true }).click();
+    await peer.getByLabel('Role name', { exact: true }).fill('Updated service role');
     await peer.locator('md-dialog').getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(peer.getByText('Updated machine role', { exact: true })).toBeVisible();
+    await expect(peer.getByText('Updated service role', { exact: true })).toBeVisible();
     await page.bringToFront();
-    await expect(page.getByText('Updated machine role', { exact: true })).toBeVisible();
+    await expect(page.getByText('Updated service role', { exact: true })).toBeVisible();
     await peer.bringToFront();
-    await peer.getByRole('button', { name: 'Delete machine role: Updated machine role', exact: true }).click();
+    await peer.getByRole('button', { name: 'Delete service role: Updated service role', exact: true }).click();
     expect(fixture.roles).toHaveLength(1);
     await peer.locator('md-dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
-    await expect(peer.getByText('No machine roles.', { exact: true })).toBeVisible();
+    await expect(peer.getByText('No service roles.', { exact: true })).toBeVisible();
     await page.bringToFront();
-    await expect(page.getByText('No machine roles assigned.', { exact: true })).toBeVisible();
+    await expect(page.getByText('No service roles assigned.', { exact: true })).toBeVisible();
     await peer.close();
 });
 
@@ -168,7 +220,7 @@ test('identifies machine actors separately in audit logs', async ({ page, contex
     await expect(page.locator('.machine-actor-label')).toBeVisible();
     await page.getByRole('button', { name: 'Details: machine.token_issued', exact: true }).click();
     const dialog = page.locator('md-dialog');
-    await expect(dialog.getByText('Machine actor', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('Service identity', { exact: true })).toBeVisible();
     await expect(dialog.getByText('Actor user ID', { exact: true })).toBeVisible();
     await expect(dialog.getByText(fixture.actorClientId, { exact: true }).first()).toBeVisible();
 });

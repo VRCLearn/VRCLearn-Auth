@@ -6,6 +6,23 @@ Google、GitHub、Microsoft、Discord、X、Telegram 和通用 OIDC/OAuth 连接
 
 Loginflare 使用 `@better-auth/oauth-provider` 和 Better Auth 1.7.13，让独立 Web 应用使用已有账号登录。协议行为由上游提供；Loginflare 通过正式扩展接口和 D1 约束增加应用管理、本地化同意页面及账号安全策略。
 
+## 接入第一个应用
+
+只想让用户登录时，先完成这条路径即可，无需配置 API 资源、角色或管理 API。
+
+1. 用已验证邮箱的账号登录，进入**开发者中心 → 我的应用 → 创建应用**。管理后台的“应用”页也有开发者中心入口；普通用户无需管理员资格即可创建自己的登录应用。
+2. 选择**有后端的网站（Web）**或**浏览器前端（SPA）**：登录由后端处理且能保管密钥时选 Web，直接在浏览器中处理时选 SPA。类型创建后不能修改。
+3. 从你的应用配置中复制完整登录、退出回调地址，每行一个，必须与应用实际发送的地址精确一致。这是应用接收回跳的地址，不是 Loginflare 的地址。可先使用下表中的现有示例。
+4. 创建后将详情中的 issuer 和客户端 ID 填入应用配置。Web 的密钥只显示一次，只保存在后端；SPA 没有客户端密钥，不要向 `VITE_` 变量填密钥。
+5. 按[标准客户端示例](#标准客户端示例)启动对应应用，从应用发起登录并同意授权，确认回到应用能显示账号资料，再测试退出。遇到回调错误，先核对两端的协议、域名、端口和路径。
+
+| 现有示例 | 创建类型 | 登录回调 | 退出回调 |
+| --- | --- | --- | --- |
+| [Hono / Workers Web](../examples/server-web/README.zh-CN.md) | 有后端的网站（Web） | `https://web.localhost:5181/callback` | `https://web.localhost:5181/logout-callback` |
+| [React SPA](#标准客户端示例) | 浏览器前端（SPA） | `https://spa.localhost:5182/callback` | `https://spa.localhost:5182/logout-callback` |
+
+这些本地地址仅用于示例，使用下文的开发证书步骤。接入自己的应用时，替换为该应用处理的真实 HTTPS 地址；HTTP、通配符、片段及直接使用 `localhost` 或回环 IP 的地址仍不支持。
+
 ## 接入约定
 
 Issuer 为 `${AUTH_URL}/api/auth`，例如 `https://identity.example.com/api/auth`。先确定公开 Origin，再注册应用；部署后保持 issuer 稳定。客户端应通过发现文档获得各接口地址。
@@ -16,9 +33,9 @@ Issuer 为 `${AUTH_URL}/api/auth`，例如 `https://identity.example.com/api/aut
 | SPA | `none` | 无客户端密钥 | 授权码与 PKCE S256 |
 | 机器 | `client_secret_basic` | 仅可信自动化服务端 | 客户端凭据，指定一个资源及已分配机器 scope |
 
-身份范围为 `openid profile email offline_access`：`openid` 用于用户身份，`profile` 允许读取资料字段，`email` 允许读取邮箱字段，`offline_access` 请求可刷新的授权。管理员配置的 API 资源通过明确的应用关联和用户业务角色，提供额外的业务权限 scope。Loginflare 本站管理员角色不是业务权限，不加入身份声明。ID Token 描述已认证身份，不能当作业务 API 的 Bearer 凭据。
+身份范围为 `openid profile email offline_access`：`openid` 用于用户身份，`profile` 允许读取资料字段，`email` 允许读取邮箱字段，`offline_access` 请求可刷新的授权。管理员配置的 API 资源通过明确的应用关联和用户角色，提供额外的业务权限 scope。Loginflare 本站管理员角色不是业务权限，不加入身份声明。ID Token 描述已认证身份，不能当作业务 API 的 Bearer 凭据。
 
-人类用户不请求业务资源时，UserInfo 使用不透明 Access Token，ID Token 由 Better Auth JWT 插件使用 RS256 签名。请求已登记的 `resource` 时，原生提供方签发绑定该 API 和用户权限的资源访问令牌。配置、资源与刷新参数、实时权限检查及 [Workers/Hono 示例](../examples/worker-api/README.md)详见 [API 访问控制](access-control.zh-CN.md)。管理员单独创建的[机器应用](management-api.zh-CN.md)使用原生客户端凭据及机器角色，不经过用户同意，不签发 ID Token 或刷新令牌。原生/移动客户端、设备授权及动态注册仍不在本轮范围内。
+人类用户不请求业务资源时，UserInfo 使用不透明 Access Token，ID Token 由 Better Auth JWT 插件使用 RS256 签名。请求已登记的 `resource` 时，原生提供方签发绑定该 API 和用户权限的资源访问令牌。配置、资源与刷新参数、实时权限检查及 [Workers/Hono 示例](../examples/worker-api/README.md)详见 [API 访问控制](access-control.zh-CN.md)。管理员单独创建的[服务应用](management-api.zh-CN.md)使用原生客户端凭据及服务角色，不经过用户同意，不签发 ID Token 或刷新令牌。原生/移动客户端、设备授权及动态注册仍不在本轮范围内。
 
 邮箱已验证且未停用的账号可在**开发者中心 → 我的应用**（`/zh-cn/developer/applications`）自行创建和管理应用。工作台通过卡片展示应用名称、类型、状态与客户端 ID，点击卡片进入配置；空列表只提供一个创建首个应用的入口。所有权由服务端根据当前账号确定，不能通过请求指定或转移；每位开发者最多拥有 20 个应用。管理员可管理全部应用，原有实例应用继续由管理员管理，迁移不会将其分配给某位开发者。
 
@@ -37,7 +54,7 @@ Issuer 为 `${AUTH_URL}/api/auth`，例如 `https://identity.example.com/api/aut
 
 `GET /api/admin/applications` 是管理员查看全部实例应用和开发者应用的有界列表，与 OAuth 协议分开。两种管理列表接口均接受签名游标和完整客户端 ID 或名称的精确检索，只返回摘要字段、ISO UTC 创建日期、前后页游标和 issuer。后台表格在 URL 中保留游标与检索，仅显示本页条数；开发者工作台加载当前所有者的有界列表，不显示检索或分页控件。回调 Origin 和退出 URI 的索引投影避免协议检查枚举全部客户端，原生精确回调校验仍为准。接口约定和本地验证边界参见[规模说明](scaling.md)。
 
-所有登录应用首次接入都需要用户同意；新增权限范围需要再次授权，不提供跳过同意的“可信应用”开关。机器访问由管理员分配机器角色及权限上限，Web 或 SPA 注册不能自行启用客户端凭据。
+所有登录应用首次接入都需要用户同意；新增权限范围需要再次授权，不提供跳过同意的“可信应用”开关。机器访问由管理员分配服务角色及权限上限，Web 或 SPA 注册不能自行启用客户端凭据。
 
 用户在**账号中心 → 已授权应用**（`/zh-cn/account/applications`）管理已授予的访问权限。列表按实际保存的同意记录展示应用、允许的权限和授权时间，停用应用也可查看和撤销。创建开发者应用不会自动授权它访问当前账号。令牌过期后，同意记录仍会展示，因为它仍允许下次登录跳过重复确认。
 
@@ -112,7 +129,7 @@ Loginflare 登录页允许使用主邮箱或用户名和同一密码登录，两
 
 原生退出确认页仅发送 Origin 形式的 referrer，不发送协议查询；表单策略仅放行精确已登记退出回跳地址的 Origin，继续保留上游签名 Cookie 确认校验。
 
-签名密钥使用上游的 D1 模型，保持 JWT 私钥加密开启。常规部署应保留数据库、issuer 和认证密钥。当前 JWT 配置未开启自动签名密钥轮换。
+签名密钥使用上游的 D1 模型，保持 JWT 私钥加密开启。常规部署应保留数据库、issuer 和认证密钥。新 RS256 密钥的签名有效期为 90 天，过期公钥继续发布 48 小时供存量令牌验证。迁移 0024 为既有无期限密钥设置升级后 90 天的截止时间；这不会轮换认证主密钥。客户端遇到未知 `kid` 时必须刷新 JWKS。
 
 ## 账号安全事件
 
@@ -145,7 +162,7 @@ Loginflare 登录页允许使用主邮箱或用户名和同一密码登录，两
 | 服务端 Web | `https://web.localhost:5181` | `/callback` | `/logout-callback` |
 | SPA | `https://spa.localhost:5182` | `/callback` | `/logout-callback` |
 
-1. 启动 Loginflare，以管理员登录，创建服务端 Web 应用，配置 `https://web.localhost:5181/callback` 和 `https://web.localhost:5181/logout-callback`。再创建 SPA，使用对应的 `https://spa.localhost:5182` 地址。示例允许全部四个范围。
+1. 启动 Loginflare，用邮箱已验证的账号登录，在开发者中心创建 Web 或 SPA 应用，登记上表对应的精确回调和退出回调地址。可先只运行其中一个示例；示例允许全部四个身份范围，无需创建业务角色。
 2. 将各示例的 `.env.example` 复制为 `.env`，填入应用标识与 Web 应用仅显示一次的密钥。`.env` 已被 Git 忽略。不能将密钥放入 `VITE_` 变量。默认 issuer 为 `http://localhost:5173/api/auth`。
 3. 使用下面的命令生成本地证书。需要已安装 OpenSSL，脚本也会寻找 Git for Windows 随附的版本；必要时用 `LOGINFLARE_OPENSSL` 指定已安装的可执行文件。脚本只写入被忽略的 `work/example-tls/key.pem`、`cert.pem`，不更改系统信任或 DNS。
 
@@ -159,9 +176,9 @@ pnpm example:spa
 
 服务仅监听 `127.0.0.1`。支持标准 `.localhost` 行为的浏览器会在本地解析这些名称。如果 DNS 代理覆盖了此行为，可配置仅用于开发的浏览器解析规则，将 `web.localhost` 和 `spa.localhost` 指向 `127.0.0.1`；自动化浏览器测试使用了这两条精确 Chromium 解析规则。仓库不会修改 hosts、安装根证书或创建隧道，测试中的证书例外仅作用于本地测试浏览器上下文。
 
-Web 示例把密钥、令牌、应用会话保存在 Node 进程中，通过 `openid-client` 校验 state、nonce、issuer、audience 和 ID Token 签名，读取 UserInfo 时匹配预期 subject。浏览器只保存随机 HttpOnly、Secure、SameSite=Lax 会话 Cookie，应用表单校验 Origin 和会话内 CSRF 值。请求发生时，若 Access Token 剩余不足一分钟便刷新。重启后会话丢失，示例不是生产会话存储方案。
+Hono/Workers Web 示例在应用自己的 D1 中加密保存令牌与会话，跨进程和 isolate 重启保留。Node 启动器只将本地 HTTPS 转接到同一 Worker。通过 `openid-client` 校验 state、nonce、issuer、audience、ID Token 签名及 UserInfo subject。浏览器只保存随机 HttpOnly、Secure、SameSite=Lax Cookie，表单校验 Origin 与 CSRF；D1 协调剩余不足一分钟时的令牌刷新。绑定、密钥、刷新失败处理及清理见[部署指南](../examples/server-web/README.zh-CN.md)。
 
-SPA 的 SDK 用户与令牌仅保存在内存中。SDK 的短期授权事务使用 `sessionStorage` 以跨越页面回跳；另有一个布尔值记录刷新页面后是否重新发起顶层授权。localStorage 和 sessionStorage 均不保存令牌。页面打开期间通过 SDK 的刷新令牌流程续期；清除本地状态不代表服务端令牌已撤销。
+React SPA 的用户与令牌仅保存在内存中。SDK 短期授权事务使用 `sessionStorage` 跨越回跳，另有布尔值记录是否在刷新页面后重新发起顶层授权。localStorage 和 sessionStorage 均不保存令牌，手动与定时刷新共享同一标签页的进行中请求。各标签页独立授权；清除本地状态不代表服务端撤销。运行 `pnpm exec vite build --config examples/spa/vite.config.ts` 后，将 `work/example-spa-dist` 部署到支持 SPA 路由回退的 HTTPS origin，并登记对应回调。`VITE_` 构建变量中只放 issuer 和 client ID。
 
 示例展示资料字段，不打印 Access Token、Refresh Token、客户端密钥或完整回调链接；错误提示也不直接输出可能包含协议数据的 SDK 异常。
 

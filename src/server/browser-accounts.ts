@@ -15,8 +15,8 @@ export const maximumBrowserAccounts = 5;
 const uuid = z.string().uuid();
 const accountHeader = 'X-Loginflare-Account';
 const flowHeader = 'X-Loginflare-Flow';
-const transientNames = ['two_factor', 'dont_remember', 'social_flow', 'security_proof', 'state', 'oauth_state'];
-const loginPaths = new Set(['/api/auth/sign-in/email', '/api/auth/sign-in/username']);
+const transientNames = ['two_factor', 'dont_remember', 'social_flow', 'security_proof', 'state', 'oauth_state', 'better-auth-passkey'];
+const loginPaths = new Set(['/api/auth/sign-in/email', '/api/auth/sign-in/username', '/api/auth/passkey/verify-authentication']);
 const authenticationPaths = new Set([...loginPaths, '/api/auth/social/start', '/api/auth/two-factor/verify-totp', '/api/auth/two-factor/verify-backup-code']);
 const anonymousAuthPaths = new Set(['/api/auth/sign-up/email', '/api/auth/send-verification-email', '/api/auth/verify-email', '/api/auth/reset-password', '/api/auth/emails/recovery/start', '/api/auth/emails/recovery/verify', '/api/auth/error']);
 function names(env: Env) {
@@ -60,16 +60,17 @@ async function accountRows(env: Env, headers: Headers): Promise<AccountRow[]> {
         LEFT JOIN "session" s ON s."id" = a."sessionId" WHERE a."browserHash" = ? AND (a."expiresAt" > ? OR s."expiresAt" > ?)
         ORDER BY a."lastUsedAt" DESC, a."id" LIMIT 10`).bind(hash, Date.now(), new Date().toISOString()).all<AccountRow>()).results;
 }
-async function activeRows(env: Env, headers: Headers, includeUnavailable = false) {
+async function activeRows(env: Env, headers: Headers, includeUnavailable = false, rows?: AccountRow[]) {
     const cookies = await parseSigned(headers.get('cookie') ?? '', env.BETTER_AUTH_SECRET);
     const sessionName = names(env).session;
-    return (await accountRows(env, headers)).filter((row) => row.token && (includeUnavailable || (!row.banned && row.emailVerified))
+    return (rows ?? await accountRows(env, headers)).filter((row) => row.token && (includeUnavailable || (!row.banned && row.emailVerified))
         && row.sessionExpiresAt! > new Date().toISOString()
         && cookies[`${sessionName}_multi-${row.token.toLowerCase()}`] === row.token);
 }
 export async function browserAccounts(env: Env, headers: Headers): Promise<BrowserAccountSummary[]> {
-    const active = new Set((await activeRows(env, headers)).map((row) => row.id));
-    return (await accountRows(env, headers)).filter((row) => row.expiresAt > Date.now() || active.has(row.id)).map((row) => ({ id: row.id,
+    const rows = await accountRows(env, headers);
+    const active = new Set((await activeRows(env, headers, false, rows)).map((row) => row.id));
+    return rows.filter((row) => row.expiresAt > Date.now() || active.has(row.id)).map((row) => ({ id: row.id,
         user: { id: row.userId, name: row.name, email: row.email, image: row.image, role: row.role },
         status: active.has(row.id) ? 'active' : 'signed-out', lastUsedAt: row.lastUsedAt }));
 }
@@ -149,7 +150,7 @@ export function browserSessionPlugin(env: Env): BetterAuthPlugin {
             }
             if (flow.targetUserId && flow.targetUserId !== session.userId) throw new APIError('FORBIDDEN', { code: 'BROWSER_WRONG_ACCOUNT' });
             if (flow.status !== 'pending') {
-                if (ctx.context.session?.user.id === session.userId && !['/sign-in/email', '/sign-in/username', '/callback/:id', '/social/verify-email'].includes(ctx.path ?? '')) return;
+                if (ctx.context.session?.user.id === session.userId && !['/sign-in/email', '/sign-in/username', '/callback/:id', '/social/verify-email', '/passkey/verify-authentication'].includes(ctx.path ?? '')) return;
                 throw new APIError('BAD_REQUEST', { code: 'BROWSER_FLOW_EXPIRED' });
             }
             await env.DB.prepare('UPDATE "browserAuthFlow" SET "userId" = ? WHERE "id" = ? AND "status" = ? AND "expiresAt" > ?')

@@ -1,10 +1,14 @@
 import { expect, test as base, type APIRequestContext, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { randomBytes } from 'node:crypto';
+import type { UpdateStatus } from '../../src/shared/releases';
 import { testOrigin } from './runtime';
 
 /** Test-only browser emulation; production still validates the real server-side challenge. */
 export async function installOfflineRoutes(context: BrowserContext) {
-    const allowed = (url: URL) => url.origin === testOrigin || (['web.localhost', 'spa.localhost', '127.0.0.1'].includes(url.hostname) && ['5181', '5182'].includes(url.port));
+    const media = new URL(testOrigin); media.hostname = '127.0.0.1';
+    const allowed = (url: URL) => url.origin === testOrigin
+        || (url.origin === media.origin && url.pathname.startsWith('/cdn-cgi/local/r2/public/isolated-avatars/'))
+        || (['web.localhost', 'spa.localhost', '127.0.0.1'].includes(url.hostname) && ['5181', '5182'].includes(url.port));
     // Independent emulated clients must not share the loopback rate-limit bucket.
     const clientAddress = `2001:db8:${randomBytes(12).toString('hex').match(/.{4}/g)!.join(':')}`;
     const clientHeaders = (url: URL, headers: Record<string, string> = {}) => url.origin === testOrigin && url.pathname.startsWith('/api/')
@@ -44,9 +48,31 @@ export async function installOfflineRoutes(context: BrowserContext) {
 export const test = base.extend({
     context: async ({ context }, use) => { await installOfflineRoutes(context); await use(context); },
 });
+
+export async function mockAdminUpdates(context: BrowserContext) {
+    const update: UpdateStatus = { currentVersion: '0.0.0', currentCommit: null, status: 'unpublished',
+        availableVersion: null, releaseUrl: null, actionUrl: null };
+    await context.route(`${testOrigin}/api/admin/updates`, (route) => route.fulfill({ json: update }));
+}
+
+export async function openNavigation(page: Page) {
+    await expect(page.locator('.sidebar')).toBeVisible();
+    const toggle = page.locator('.mobile-navigation button');
+    if (await toggle.isVisible() && await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+}
 export async function switchArea(page: Page, name: string) {
-    await page.locator('.area-selector').getByRole('button').click();
-    await page.getByRole('menuitem', { name, exact: true }).click();
+    const lifecycle = await page.locator('.area-selector md-menu').evaluateHandle((menu) => ({
+        opened: new Promise<void>((resolve) => menu.addEventListener('opened', () => resolve(), { once: true })),
+        closed: new Promise<void>((resolve) => menu.addEventListener('closed', () => resolve(), { once: true })),
+    }));
+    try {
+        await page.locator('.area-selector').getByRole('button').click();
+        await lifecycle.evaluate((events) => events.opened);
+        const option = page.getByRole('menuitem', { name, exact: true });
+        await option.click();
+        await lifecycle.evaluate((events) => events.closed);
+        await expect(page.locator('.area-selector').getByRole('button')).toHaveAttribute('aria-description', name);
+    } finally { await lifecycle.dispose(); }
 }
 
 /** Install both listeners before interaction and wait for the actual animation

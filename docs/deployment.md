@@ -2,11 +2,15 @@
 
 [简体中文](deployment.zh-CN.md)
 
+For optional direct R2 image delivery, see [Public image delivery](public-media.md).
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/CQMHV/loginflare)
 
-Use the button for a new repository, or import your existing organization repository in **Workers & Pages → Create application → Import a repository**. In either case, select `main`, leave the root at the repository root, and use `pnpm build:deploy` and `pnpm run deploy`. Leave preview builds disabled for this Worker. Cloudflare assigns the resource IDs. The release creates or binds D1 and two private R2 buckets, one for assets and one for instance keys.
+Use the button to create a repository and connect it to Workers Builds. Accept the detected build and deploy commands. For an existing repository, import it through **Workers & Pages → Create application → Import a repository**, select `main`, and keep the repository root. Set the build command to `pnpm run build` and the deploy command to `pnpm run deploy`. These commands run the same deployment build and release checks as the deployment button. Preview builds can stay disabled. Cloudflare assigns the resource IDs. The release creates or binds D1 and two private R2 buckets, one for assets and one for instance keys.
 
 You need an active Cloudflare zone for your login hostname, R2 enabled, and Workers Paid with [Email Sending](https://developers.cloudflare.com/email-service/) for real delivery.
+
+Default bucket names derive from the full Worker name. Names that would exceed R2's 63-character limit include a deterministic SHA-256 prefix, so Workers sharing a long name prefix receive different buckets. Existing live bindings and explicitly configured bucket names are preserved.
 
 1. Enter three **Worker secrets** in Cloudflare. If the existing repository import only offers build variables, add the values under the Worker’s **Settings → Variables and Secrets** when the Worker appears. Do not add them to build variables or Git.
 
@@ -19,6 +23,20 @@ You need an active Cloudflare zone for your login hostname, R2 enabled, and Work
 2. Open the Worker’s `workers.dev` URL to see progress. The Worker connects the login hostname, configures `noreply@notify.<zone>`, and creates a Turnstile widget. If a DNS conflict is reported, resolve the named record in Cloudflare. Setup resumes from that step.
 3. Open the login hostname and select **Send setup link**. Open the email link, choose a username and password, and sign in. The link expires in 20 minutes and can be used once. Registration and OAuth authorization open after the administrator is created.
 
+### When setup needs attention
+
+The installation page shows the current step, recovery guidance and a diagnostic code. Keep it open to check progress automatically. After a configuration correction, setup checks existing resources before continuing. Check the three secrets above under the Worker's **Settings → Variables and Secrets**. Keep `CF_SETUP_TOKEN` in the Cloudflare Worker secrets for this installation only.
+
+| Page guidance | Next step |
+| --- | --- |
+| Access denied or wrong token type | Check `CF_SETUP_TOKEN` expiry, use the User API Token described below, and verify the selected account, zone and permissions. |
+| DNS or hostname assignment conflict | Check the named record and Worker custom-domain assignment before changing them. Do not overwrite unrelated services. |
+| Sending-domain verification or rate limiting | Keep the page open for automatic progress checks. For persistent failures, check Email Sending and the Worker's installation logs. |
+| Cloudflare result could not be confirmed | A previous write may have succeeded. Keep the instance and resources while setup reconciles them; do not create replacements, delete resources or clear the database to retry. |
+| Instance keys, private storage or database do not match | Follow the recovery instructions below to check the original D1, R2 and instance configuration. Regenerating keys or clearing data does not recover an existing instance. |
+
+For other failures, use the diagnostic code to check the Worker's installation logs. If administrator email delivery fails, correct the email configuration and request the link again; an existing valid invitation remains valid.
+
 ### One-time token
 
 In **My Profile → API Tokens**, create a custom **User API Token** with a short expiry that leaves time for DNS verification. Restrict it to the selected Cloudflare account and login zone:
@@ -29,6 +47,8 @@ In **My Profile → API Tokens**, create a custom **User API Token** with a shor
 Use the token once in the Worker’s `CF_SETUP_TOKEN` secret. When the resources are ready, Loginflare removes the installation secrets from the Worker. The token itself expires in Cloudflare. Workers Builds uses a separate deployment credential with Workers, D1, and R2 write access.
 
 ### Updates and recovery
+
+See [Updating and recovering Loginflare](upgrading.md) for the complete flow, read-only tools, Fork migrations and recovery. Upstream maintains source and releases only. After setup, pushes to downstream `main` continue to deploy automatically without a separate version confirmation.
 
 Workers Builds publishes from the connected repository’s `main`. The deploy script checks the target Worker, storage bindings, migration history, and current branch before promotion. A code-only release applies no migrations. Pending migrations on an existing instance need a reviewed SHA-256 entry in [the online migration list](../migrations/online.json). Test with representative data and verify that the previously deployed Worker can continue to serve throughout the change. Incompatible changes need a separately reviewed operations procedure and a planned service window.
 

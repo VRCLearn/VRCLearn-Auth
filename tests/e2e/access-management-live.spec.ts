@@ -4,7 +4,7 @@ import { expect, test } from './fixtures';
 import { executeLocal, removeLocalApplications, removeLocalFixtures } from './database';
 import { testOrigin } from './runtime';
 
-test('persists API resources, application access and user business roles through the real console', async ({ page, context }) => {
+test('persists API resources, application access and user roles through the real console', async ({ page, context }) => {
     test.setTimeout(120_000);
     const password = 'Isolated-api-management-492!', now = new Date().toISOString(), hash = await hashPassword(password), tag = randomUUID().slice(0, 8);
     const administrator = { id: randomUUID(), email: `ui-${randomUUID()}@loginflare.test` }, member = { id: randomUUID(), email: `ui-${randomUUID()}@loginflare.test` };
@@ -32,7 +32,7 @@ test('persists API resources, application access and user business roles through
         let dialog = page.locator('md-dialog.form-dialog');
         await dialog.getByLabel('Resource name', { exact: true }).fill(resourceName);
         await dialog.getByLabel('API identifier', { exact: true }).fill(identifier);
-        await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Create API resource', exact: true }).click();
         await expect(dialog).toHaveCount(0);
         await page.getByRole('link', { name: resourceName, exact: true }).click();
         await expect(page).toHaveURL((url) => url.pathname === '/en-us/admin/access/resources/detail' && !!url.searchParams.get('id'));
@@ -41,7 +41,7 @@ test('persists API resources, application access and user business roles through
         dialog = page.locator('md-dialog.form-dialog');
         await dialog.getByLabel('Permission name', { exact: true }).fill(permissionName);
         await dialog.getByLabel('Permission scope', { exact: true }).fill(scope);
-        await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Create permission', exact: true }).click();
         await expect(dialog).toHaveCount(0);
         await page.getByRole('button', { name: 'Allow application', exact: true }).click();
         dialog = page.locator('md-dialog.form-dialog');
@@ -57,12 +57,12 @@ test('persists API resources, application access and user business roles through
         dialog = page.locator('md-dialog.form-dialog');
         await dialog.getByLabel('Role name', { exact: true }).fill(roleName);
         await dialog.getByRole('checkbox', { name: `${permissionName} (${scope})`, exact: true }).check();
-        await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Create role', exact: true }).click();
         await expect(page.getByText(roleName, { exact: true })).toBeVisible();
         const roles = await context.request.get(`/api/admin/access/roles?${new URLSearchParams({ lookupField: 'name', lookupValue: roleName })}`);
         expect(roles.status()).toBe(200); roleId = (await roles.json()).items[0].id;
         await page.goto(`/en-us/admin/users/detail?id=${member.id}`);
-        await page.getByRole('button', { name: 'Manage business roles', exact: true }).click();
+        await page.getByRole('button', { name: 'Manage user roles', exact: true }).click();
         dialog = page.locator('md-dialog.form-dialog');
         await dialog.getByRole('checkbox', { name: roleName, exact: true }).check();
         await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
@@ -86,7 +86,7 @@ test('persists API resources, application access and user business roles through
         dialog = page.locator('md-dialog.form-dialog');
         await expect(dialog.getByText(administrator.id, { exact: true })).toBeVisible();
         await expect(dialog.getByText(member.id, { exact: true }).first()).toBeVisible();
-        await expect(dialog.getByText('User business roles changed', { exact: false })).toBeVisible();
+        await expect(dialog.getByText('User roles changed', { exact: false })).toBeVisible();
         await expect(dialog.getByText(password, { exact: true })).toHaveCount(0);
     } finally {
         if (resourceId) await context.request.delete(`/api/admin/access/resources/${resourceId}`, { headers });

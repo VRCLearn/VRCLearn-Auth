@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hashPassword } from 'better-auth/crypto';
-import { expect, test, type Page } from './fixtures';
+import { expect, selectMaterialOption, test, type Page } from './fixtures';
 import { executeLocal, removeLocalFixtures } from './database';
 import { testOrigin } from './runtime';
 import type { Branding } from '../../src/shared/branding';
@@ -59,7 +59,7 @@ test('publishes independent logo, name and Material color schemes across pages, 
     await expect(peer.getByText(`Add ${name} sign-in to your applications.`, { exact: true })).toBeVisible();
     await expect(peer.getByText(`Let people sign in to your website or application with their ${name} account.`, { exact: true })).toBeVisible();
     await peer.goto('/en-us/developer/applications/new');
-    await expect(peer.getByText(`One exact URI per line for returning after signing out of ${name}.`, { exact: true })).toBeVisible();
+    await expect(peer.getByLabel('Sign-out redirect URIs', { exact: true })).toHaveAccessibleDescription(new RegExp(`after signing out of ${name}, for example`));
     await peer.goto('/zh-cn/developer/applications');
     await expect(peer.getByText(`为你的应用接入 ${name} 登录。`, { exact: true })).toBeVisible();
     await expect(peer.getByText(`让用户使用 ${name} 账号登录你的网站或应用。`, { exact: true })).toBeVisible();
@@ -123,10 +123,11 @@ test('adjusts SVG logos before upload and retains vectors with the displayed rot
     expect(uploaded.status()).toBe(200); await expect(editor).toHaveCount(0);
     expect(uploads).toHaveLength(1); expect(uploads[0]!.toString()).toContain('<g transform='); expect(uploads[0]!.toString()).not.toContain('<image');
     const { logoUrl } = await uploaded.json() as { logoUrl: string };
-    const stored = await context.request.get(`${testOrigin}${logoUrl}`);
+    const stored = await context.request.get(new URL(logoUrl, testOrigin).href);
+    expect(stored.headers()['x-loginflare-test-worker']).toBeUndefined();
     expect(stored.headers()['content-type']).toBe('image/svg+xml'); expect(await stored.text()).toBe(uploads[0]!.toString());
     const pixels = await page.evaluate(async (url) => {
-        const image = new Image(); image.src = url; await image.decode();
+        const image = new Image(); image.crossOrigin = 'anonymous'; image.src = url; await image.decode();
         const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 8;
         const drawing = canvas.getContext('2d')!; drawing.drawImage(image, 0, 0, 4, 8);
         return { width: image.naturalWidth, height: image.naturalHeight, top: Array.from(drawing.getImageData(2, 1, 1, 1).data), bottom: Array.from(drawing.getImageData(2, 6, 1, 1).data) };
@@ -162,17 +163,18 @@ test('cancels without uploading, then confirms a raster logo as WebP through the
 
 test('saves scheme-only changes and restores the default without creating empty edits', async ({ page }) => {
     await signin(page); await page.goto('/en-us/admin/branding');
-    const select = page.getByRole('combobox', { name: 'Color scheme', exact: true });
+    const combobox = page.getByRole('combobox', { name: 'Color scheme', exact: true });
+    const select = page.locator('md-outlined-select').filter({ has: combobox });
+    const monochrome = select.getByRole('option', { name: 'Monochrome', exact: true });
     const save = page.getByRole('button', { name: 'Save changes', exact: true });
     const reset = page.getByRole('button', { name: 'Restore defaults', exact: true });
     await expect(reset).toBeDisabled(); await expect(save).toBeDisabled();
-    await select.click();
-    await expect(page.getByRole('option')).toHaveCount(9);
-    await page.getByRole('option', { name: 'Monochrome', exact: true }).click();
+    await expect(select.locator('md-select-option')).toHaveCount(9);
+    await selectMaterialOption(select, monochrome);
     await expect(save).toBeEnabled(); await expect(reset).toBeEnabled();
     await reset.click(); await expect(save).toBeDisabled(); await expect(reset).toBeDisabled();
     await expect(page.locator('md-outlined-select')).toHaveJSProperty('value', 'tonal-spot');
-    await select.click(); await page.getByRole('option', { name: 'Monochrome', exact: true }).click();
+    await selectMaterialOption(select, monochrome);
     await save.click(); await expect(page.getByText('Your changes have been saved.', { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.loginflareBranding.getSnapshot().colorScheme)).toBe('monochrome');
     expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--md-sys-color-primary').trim())).toBe('#000000');

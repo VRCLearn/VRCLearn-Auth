@@ -1,5 +1,5 @@
 import type { BrowserContext } from '@playwright/test';
-import { expect, test, selectMaterialOption } from './fixtures';
+import { expect, test, mockAdminUpdates, selectMaterialOption } from './fixtures';
 import { testOrigin } from './runtime';
 import type { Identity } from '../../src/client/api';
 import { defaultConnectionConfig, type SocialConnection } from '../../src/shared/social';
@@ -10,6 +10,7 @@ const iconUrl = `/social/icons/${iconId}`;
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#6750a4"/><path d="m18 32 9 9 19-20" fill="none" stroke="white" stroke-width="6"/></svg>';
 
 async function icons(context: BrowserContext) {
+    await mockAdminUpdates(context);
     const now = new Date().toISOString();
     const actor: Identity = {
         user: { id: 'icon-administrator', name: 'Icon Administrator', email: 'icons@loginflare.test', emailVerified: true, role: 'admin', createdAt: now },
@@ -47,6 +48,7 @@ async function icons(context: BrowserContext) {
         else if (path === '/api/auth/social/security') await route.fulfill({ json: {
             hasPassword: false, providers, identities: state.identities,
         } });
+        else if (path === '/api/auth/passkey/list-user-passkeys') await route.fulfill({ json: [] });
         else if (path === '/api/admin/social-connections/icon') {
             state.uploads.push({ type: request.headers()['content-type'] ?? '', bytes: request.postDataBuffer()! });
             await route.fulfill(state.failUpload ? { status: 400, json: { code: 'SOCIAL_ICON_INVALID' } } : { json: { iconId, iconUrl } });
@@ -158,6 +160,7 @@ for (const locale of ['en-us', 'zh-cn'] as const) {
         expect(state.externalIcons).toHaveLength(0);
         state.actor = actor;
         await page.goto(`/${locale}/account/security`);
+        await expect(page.getByText(chinese ? '尚未登记通行密钥。' : 'No passkeys registered.', { exact: true })).toBeVisible();
         for (const [name, type] of [['X', 'x'], ['Telegram', 'telegram']]) {
             const row = page.locator('.social-account').filter({ has: page.getByRole('button', { name: chinese ? `绑定 ${name}` : `Link ${name}`, exact: true }) });
             await expect(row.locator(`.provider-icon-${type}`)).toBeVisible();

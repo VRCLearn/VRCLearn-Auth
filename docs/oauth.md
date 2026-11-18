@@ -4,6 +4,23 @@
 
 Loginflare uses `@better-auth/oauth-provider` and Better Auth 1.7.13 to let independent Web applications use its accounts. OAuth/OIDC protocol behavior comes from the provider. Loginflare adds application administration, localized consent, and account security policy through supported hooks and D1 constraints.
 
+## Connect your first application
+
+For account sign-in, complete this path first. API resources, roles and the Management API are optional.
+
+1. Sign in with an email-verified account and open **Developer center → My applications → Create application**. The administration Applications page also links to the Developer center; ordinary users can create their own sign-in applications.
+2. Choose **Website with a backend (Web)** when a backend handles sign-in and can keep a secret, or **Browser frontend (SPA)** when sign-in runs directly in the browser. The type cannot be changed after creation.
+3. Copy the full sign-in and sign-out callback URLs from your application's configuration, one per line. They must match the URLs your application sends exactly. These addresses belong to your application, not Loginflare. You can start with an existing example below.
+4. Configure your application with the issuer and client ID from its details. A Web secret is displayed once and belongs only on the backend. SPA clients have no secret; never put one in a `VITE_` variable.
+5. Run the matching [standard-client example](#standard-client-examples), start sign-in from the application, approve access and check that account details appear after the return. Test signing out too. For redirect errors, compare the scheme, hostname, port and path on both sides.
+
+| Existing example | Application type | Sign-in callback | Sign-out callback |
+| --- | --- | --- | --- |
+| [Hono / Workers Web](../examples/server-web/README.md) | Website with a backend (Web) | `https://web.localhost:5181/callback` | `https://web.localhost:5181/logout-callback` |
+| [React SPA](#standard-client-examples) | Browser frontend (SPA) | `https://spa.localhost:5182/callback` | `https://spa.localhost:5182/logout-callback` |
+
+These local addresses are for the examples and use the development certificates described below. For your own application, use its actual HTTPS callback handlers. HTTP, wildcards, fragments, bare `localhost` and loopback IP addresses remain unsupported.
+
 ## Client contract
 
 Google, GitHub, Microsoft, Discord, X, Telegram and generic OIDC/OAuth connections are configured once by the Loginflare administrator. Applications keep this same client contract and receive a stable Loginflare user ID as `sub`, regardless of the sign-in method. Loginflare completes local email verification and MFA before resuming authorization. See [Third-party sign-in](social.md) for account linking, email conflicts and recovery behavior.
@@ -16,9 +33,9 @@ The issuer is `${AUTH_URL}/api/auth`, for example `https://identity.example.com/
 | SPA | `none` | No client secret | Authorization code with PKCE S256 |
 | Machine | `client_secret_basic` | Trusted automation server only | Client credentials with one resource and assigned machine scopes |
 
-The identity scope set is `openid profile email offline_access`. `openid` identifies the user, `profile` permits profile claims, `email` permits email claims, and `offline_access` requests renewable access. Administrator-managed API resources add business permission scopes through explicit application/resource links and user business-role assignments. Loginflare console administrator roles are not business permissions and are not added to identity claims. An ID Token describes the authenticated identity; it is not a bearer credential for an application's business API.
+The identity scope set is `openid profile email offline_access`. `openid` identifies the user, `profile` permits profile claims, `email` permits email claims, and `offline_access` requests renewable access. Administrator-managed API resources add business permission scopes through explicit application/resource links and user role assignments. Loginflare console administrator roles are not business permissions and are not added to identity claims. An ID Token describes the authenticated identity; it is not a bearer credential for an application's business API.
 
-Human sign-in requests without a business resource use opaque access tokens for UserInfo and RS256 ID Tokens through Better Auth's JWT plugin. A request with a registered `resource` uses a native signed resource access token, scoped to that API and the user's permissions. See [API access control](access-control.md) for configuration, resource/refresh parameters, immediate authorization checks and the [Workers/Hono example](../examples/worker-api/README.md). Separately administrator-created [machine applications](management-api.md) use native client credentials and machine roles, without human consent, ID Tokens or refresh tokens. Native/mobile clients, device authorization and dynamic registration remain outside this release.
+Human sign-in requests without a business resource use opaque access tokens for UserInfo and RS256 ID Tokens through Better Auth's JWT plugin. A request with a registered `resource` uses a native signed resource access token, scoped to that API and the user's permissions. See [API access control](access-control.md) for configuration, resource/refresh parameters, immediate authorization checks and the [Workers/Hono example](../examples/worker-api/README.md). Separately administrator-created [service applications](management-api.md) use native client credentials and service roles, without human consent, ID Tokens or refresh tokens. Native/mobile clients, device authorization and dynamic registration remain outside this release.
 
 Verified, active accounts can create and manage their own applications under **Developer center → My applications** (`/en-us/developer/applications`). The workspace shows application cards with the name, type, status and client ID; opening a card leads to its configuration. An empty workspace offers one entry to create the first application. Ownership is assigned by the server from the current account and cannot be supplied or transferred in a request. Each developer may own up to 20 applications. Administrators manage all applications; existing instance applications remain administrator-managed and are not assigned to a developer by the migration.
 
@@ -37,7 +54,7 @@ Create and edit forms share their validation rules with the server. Invalid fiel
 
 `GET /api/admin/applications` is the bounded administrator view of all instance and developer applications, separate from the OAuth protocol. Both management list APIs accept signed cursor pagination and an exact client-ID or complete-name lookup and return only summary fields, ISO UTC creation times, page cursors and the issuer. The administrator table preserves its cursor and search in the URL and reports only the current page's size. The developer workspace loads the owner's bounded list without search or pagination controls. Indexed callback-Origin and post-logout URI projections avoid enumerating the client registry during protocol checks; native exact redirect validation remains authoritative. See [Scaling](scaling.md) for the management API contract and local validation boundaries.
 
-Every login application requires user consent on first use. Expanded permissions require consent again. There is no trusted-application switch to skip consent. Machine access instead requires an administrator-assigned machine role and scope ceiling; a Web or SPA registration cannot opt itself into client credentials.
+Every login application requires user consent on first use. Expanded permissions require consent again. There is no trusted-application switch to skip consent. Machine access instead requires an administrator-assigned service role and scope ceiling; a Web or SPA registration cannot opt itself into client credentials.
 
 Users manage granted access at **Account center → Authorized applications** (`/en-us/account/applications`). This lists applications with stored consent, the approved permissions and the authorization date, including disabled applications. Creating a developer application does not authorize it to use the developer's account. Consent remains listed when tokens expire because it still allows subsequent sign-in without another approval.
 
@@ -112,7 +129,7 @@ Application logout and Loginflare logout are separate operations:
 
 Native logout confirmation pages send only an Origin referrer, never protocol queries; their form policy permits the exact registered post-logout destination's Origin while retaining the provider's signed-cookie confirmation checks.
 
-Signing keys use the provider's D1 model; JWT private-key encryption remains enabled. Routine redeployments must preserve the database, issuer, and authentication secret. Automatic signing-key rotation is not enabled by the current JWT configuration.
+Signing keys use the provider's D1 model; JWT private-key encryption remains enabled. Routine redeployments must preserve the database, issuer, and authentication secret. New RS256 keys have a 90-day signing lifetime; expired keys remain published for a 48-hour verification grace period. Migration 0024 gives existing indefinite keys a deadline 90 days after upgrade. This does not rotate the authentication master secret. Clients must refresh JWKS when encountering an unknown `kid`.
 
 ## Account security events
 
@@ -145,7 +162,7 @@ The examples are independent applications under this repository, not additional 
 | Server Web | `https://web.localhost:5181` | `/callback` | `/logout-callback` |
 | SPA | `https://spa.localhost:5182` | `/callback` | `/logout-callback` |
 
-1. Start Loginflare, sign in as an administrator, and create a Server Web application with `https://web.localhost:5181/callback` and `https://web.localhost:5181/logout-callback`. Create a SPA application using the equivalent `https://spa.localhost:5182` URLs. Allow all four scopes for the examples.
+1. Start Loginflare and sign in with an email-verified account. In the Developer center, create a Web or SPA application with the matching exact sign-in and sign-out callbacks above. You can run just one example first. The examples allow all four identity scopes and need no business roles.
 2. Copy each example's `.env.example` to `.env`. Fill in the application IDs and the Web application's once-shown client secret. `.env` files are ignored by Git. Never put a client secret in a `VITE_` variable. The issuer defaults to `http://localhost:5173/api/auth`.
 3. Generate local certificates with the command below. OpenSSL must be installed; the script also detects the copy bundled with Git for Windows. If necessary, set `LOGINFLARE_OPENSSL` to an installed executable. It writes only `work/example-tls/key.pem` and `cert.pem`, which are ignored, and does not modify system trust or DNS.
 
@@ -159,9 +176,9 @@ Run the Web and SPA commands in separate terminals. Open the URLs from the table
 
 The servers bind only to `127.0.0.1`. Browsers with standard `.localhost` handling resolve these names locally. If a DNS proxy overrides that handling, configure your browser's development-only resolver to map `web.localhost` and `spa.localhost` to `127.0.0.1`; the automated browser test supplies these exact Chromium resolver rules. The repository does not modify the system hosts file, install a root CA, or create a tunnel. Certificate exceptions in tests apply only to the local test browser context.
 
-The Web example keeps its client secret, tokens, and sessions in the Node process. It validates state, nonce, issuer, audience, and ID Token signatures through `openid-client`; it fetches UserInfo with the expected subject. An opaque HttpOnly, Secure, SameSite=Lax cookie identifies the local application session. Forms enforce Origin and a session-bound CSRF value. Tokens refresh on requests when less than one minute remains. The process loses its sessions on restart; it is not a production application-session store.
+The Hono/Workers Web example stores encrypted tokens and sessions in its own D1 database, preserving them across process/isolate restarts. The Node launcher only bridges local HTTPS to the same Worker. It validates state, nonce, issuer, audience, ID Token signatures and UserInfo subject through `openid-client`. An opaque HttpOnly, Secure, SameSite=Lax cookie identifies the session; forms enforce Origin and CSRF checks. D1 coordinates renewal when less than one minute remains. See the [deployment and session-storage guide](../examples/server-web/README.md) for bindings, secrets, refresh failure handling and cleanup.
 
-The SPA stores the SDK user and tokens in memory. The SDK's short-lived authorization transaction uses `sessionStorage` to survive a redirect; a separate boolean remembers whether to restart top-level authorization after reload. No token is stored in localStorage or sessionStorage. Renewal uses the SDK's refresh-token path while the page remains open. Clearing local state does not prove server-side token revocation.
+The React SPA stores the SDK user and tokens in memory. The SDK's short-lived authorization transaction uses `sessionStorage` to survive a redirect; a separate boolean remembers whether to restart top-level authorization after reload. No token is stored in localStorage or sessionStorage. Manual and timed renewal share one in-flight request per tab. Each tab owns its own grant; clearing local state does not prove server-side token revocation. Build with `pnpm exec vite build --config examples/spa/vite.config.ts` and deploy `work/example-spa-dist` with SPA fallback, an exact HTTPS origin and that origin's registered callback URLs. Only issuer and client ID belong in its `VITE_` build variables.
 
 The examples display profile claims but never print access tokens, refresh tokens, client secrets, or complete callback URLs. Their errors intentionally omit raw SDK exceptions, which can contain protocol data.
 

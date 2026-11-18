@@ -1,40 +1,55 @@
 import {
-    createContext, Fragment, useContext, useEffect, useRef, useState,
+    createContext, Fragment, lazy, Suspense, useContext, useEffect, useRef, useState,
     type FormEvent, type PropsWithChildren,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useMatch, useNavigate, useSearchParams } from 'react-router-dom';
 import { defaultLocale, isLocale, localizedPath, localeToPath, pathToLocale, type Locale } from '../shared/locales';
 import { ApiError, captchaRequest, errorCode, fetchJson, request, type Identity, type Session, type User } from './api';
 import i18n from './i18n';
+import { EmptyList, SearchReset } from './list-feedback';
 import { Button, ButtonLink, Checkbox, ConfirmationDialog, Divider, List, ListItem, MenuButton, NavigationLink, Progress, Select, TextField } from './material';
 import { setThemePreference, useTheme, type ThemePreference } from './theme';
-import { ApplicationEditor, ApplicationsPage } from './Applications';
-import { AuthorizedApplicationsPage } from './AuthorizedApplications';
-import { EmailsPage } from './Emails';
 import { oauthSearch, providerRequest, withOAuthSearch } from './oauth';
 import { CursorRecovery, listParameters, listPath, pageParameters, PageNavigation, type CursorPage } from './pagination';
 import { resolveLocale, savePreference } from './locale';
 import { ConnectionNotice, DataScope, ResourceFeedback, useConfiguration, useDataActions, useIdentity, useResource } from './data';
 import { PageStateProvider, useClearSecrets, usePageDraft } from './page-state';
+import { PageBoundary } from './PageBoundary';
 import { Avatar, AvatarEditor } from './Avatar';
 import { ToolbarIcon } from './ToolbarIcon';
 import { BrandingUpdates, useBranding } from './branding';
-import { BrandingSettings } from './BrandingSettings';
-import { MfaSettings } from './MfaSettings';
 import { SocialButtons, SocialCompletion, SocialSettings } from './Social';
 import { SecurityDialog, useSecurity } from './security';
-import { SocialConnectionsPage } from './SocialConnections';
 import { ErrorNotice, useFeedback } from './feedback';
 import { BrowserAccountChooser, BrowserAccountMenu, useBrowserAccounts } from './BrowserAccounts';
 import { cancelBrowserFlow, completeBrowserLogin, ensureBrowserFlow, startBrowserFlow } from './browser-account-actions';
-import { browserFlowId, browserFlowTargetAccount, clearBrowserFlow, flowPath, selectedBrowserAccount, selectBrowserAccount } from './browser-context';
-import { ApiResourcesPage, ApiResourceDetailPage, BusinessRolesPage, UserBusinessRoles, AuditLogsPage } from './AccessManagement';
-import { MachineApplicationsPage, MachineApplicationDetailPage, MachineRolesPage } from './Machines';
+import { browserContextEvent, browserContextVersion, browserFlowId, browserFlowTargetAccount, clearBrowserFlow, flowPath, selectedBrowserAccount, selectBrowserAccount } from './browser-context';
+import { authenticatePasskey, browserSupportsWebAuthn, cancelPasskey, Passkeys, passkeyError } from './Passkeys';
+import { UpdateNotice, VersionUpdates } from './VersionUpdates';
+const ApplicationsPage = lazy(() => import('./Applications').then((module) => ({ default: module.ApplicationsPage })));
+const ApplicationEditor = lazy(() => import('./Applications').then((module) => ({ default: module.ApplicationEditor })));
+const AuthorizedApplicationsPage = lazy(() => import('./AuthorizedApplications').then((module) => ({ default: module.AuthorizedApplicationsPage })));
+const EmailsPage = lazy(() => import('./Emails').then((module) => ({ default: module.EmailsPage })));
+const BrandingSettings = lazy(() => import('./BrandingSettings').then((module) => ({ default: module.BrandingSettings })));
+const MfaSettings = lazy(() => import('./MfaSettings').then((module) => ({ default: module.MfaSettings })));
+const SocialConnectionsPage = lazy(() => import('./SocialConnections').then((module) => ({ default: module.SocialConnectionsPage })));
+const ApiResourcesPage = lazy(() => import('./AccessManagement').then((module) => ({ default: module.ApiResourcesPage })));
+const ApiResourceDetailPage = lazy(() => import('./AccessManagement').then((module) => ({ default: module.ApiResourceDetailPage })));
+const BusinessRolesPage = lazy(() => import('./AccessManagement').then((module) => ({ default: module.BusinessRolesPage })));
+const UserBusinessRoles = lazy(() => import('./AccessManagement').then((module) => ({ default: module.UserBusinessRoles })));
+const AuditLogsPage = lazy(() => import('./AccessManagement').then((module) => ({ default: module.AuditLogsPage })));
+const MachineApplicationsPage = lazy(() => import('./Machines').then((module) => ({ default: module.MachineApplicationsPage })));
+const MachineApplicationDetailPage = lazy(() => import('./Machines').then((module) => ({ default: module.MachineApplicationDetailPage })));
+const MachineRolesPage = lazy(() => import('./Machines').then((module) => ({ default: module.MachineRolesPage })));
+const AccountDeletion = lazy(() => import('./AccountDeletion').then((module) => ({ default: module.AccountDeletion })));
+const AccountDeletionReceipt = lazy(() => import('./AccountDeletion').then((module) => ({ default: module.AccountDeletionReceipt })));
+const WebhooksPage = lazy(() => import('./Webhooks').then((module) => ({ default: module.WebhooksPage })));
+const WebhookDeliveriesPage = lazy(() => import('./Webhooks').then((module) => ({ default: module.WebhookDeliveriesPage })));
 
 interface AppContextValue {
     identity: Identity | null | undefined;
-    refresh: () => Promise<void>;
+    refresh: ReturnType<typeof useIdentity>['refresh'];
     locale: Locale;
 }
 
@@ -47,6 +62,7 @@ function useApp() {
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
     const paths: Record<string, React.ReactNode> = {
         arrow: <><path d="M5 12h14M13 6l6 6-6 6" /></>,
+        menu: <path d="M4 6h16M4 12h16M4 18h16" />,
         back: <path d="m14 6-6 6 6 6" />,
         profile: <><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></>,
         shield: <><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z" /><path d="m8.5 12 2.5 2.5 4.5-5" /></>,
@@ -244,13 +260,17 @@ function AuthPage({ mode }: { mode: AuthMode }) {
     const [recoveryChallenge, setRecoveryChallenge] = useState<string>();
     const [recoveryCode, setRecoveryCode] = useState('');
     const captureSecrets = useClearSecrets(() => { setPassword(''); setConfirmPassword(''); setRecoveryCode(''); setRecoveryChallenge(undefined); setCaptchaToken(''); setCaptchaReset((value) => value + 1); }, mode);
+    useEffect(() => {
+        window.addEventListener(browserContextEvent, cancelPasskey); window.addEventListener('pagehide', cancelPasskey);
+        return () => { cancelPasskey(); window.removeEventListener(browserContextEvent, cancelPasskey); window.removeEventListener('pagehide', cancelPasskey); };
+    }, [mode]);
     const token = new URLSearchParams(location.search).get('token');
     const urlError = new URLSearchParams(location.search).get('error');
     const needsCaptcha = ['login', 'signup', 'verify-email'].includes(mode) || (mode === 'forgot-password' && !recoveryChallenge);
     const oauthQuery = oauthSearch(location.search);
     const authPath = (page: string, extra?: Record<string, string>) => withOAuthSearch(localizedPath(locale, page), location.search, extra);
     const callbackURL = `${window.location.origin}${authPath('verified')}`;
-    const browserAccounts = useBrowserAccounts();
+    const browserAccounts = useBrowserAccounts(!busy);
     const selectingInitial = useRef(false);
 
     useEffect(() => {
@@ -286,6 +306,28 @@ function AuthPage({ mode }: { mode: AuthMode }) {
         login: 'loginDescription', signup: 'signupDescription', 'verify-email': 'verificationDescription',
         'forgot-password': 'forgotDescription', 'reset-password': 'resetDescription', verified: 'verifiedDescription',
     };
+
+    async function signInPasskey() {
+        if (busy) return;
+        const page = window.location.pathname, signedQuery = oauthSearch(window.location.search);
+        let current = () => window.location.pathname === page && oauthSearch(window.location.search) === signedQuery;
+        setBusy(true); setError(undefined);
+        try {
+            await ensureBrowserFlow(locale, oauthQuery || undefined);
+            const version = browserContextVersion();
+            // Starting a login flow intentionally replaces the displayed identity
+            // with an anonymous session. Keep the ceremony bound to its browser
+            // transaction rather than that transient account-query generation.
+            current = () => browserContextVersion() === version && window.location.pathname === page && oauthSearch(window.location.search) === signedQuery;
+            const result = await authenticatePasskey(oauthQuery, current);
+            if (!current()) return;
+            if (result?.redirect) { await completeBrowserLogin(result, true); return; }
+            if (!result?.twoFactorRedirect) await completeBrowserLogin(result);
+            await refresh({ cancelRefetch: !!result?.twoFactorRedirect }); savePreference(locale);
+            navigate(result?.twoFactorRedirect ? authPath('two-factor') : localizedPath(locale, 'account'), { replace: true });
+        } catch (cause) { if (current()) setError(errorCode(passkeyError(cause))); }
+        finally { setBusy(false); }
+    }
 
     async function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -329,7 +371,7 @@ function AuthPage({ mode }: { mode: AuthMode }) {
                     if (!secretsCurrent()) return;
                     setPassword('');
                     if (!result.twoFactorRedirect) await completeBrowserLogin(result);
-                    await refresh();
+                    await refresh({ cancelRefetch: !!result.twoFactorRedirect });
                     savePreference(locale);
                     navigate(result.twoFactorRedirect ? flowPath(localizedPath(locale, 'two-factor')) : localizedPath(locale, 'account'), { replace: true });
                     break;
@@ -403,6 +445,7 @@ function AuthPage({ mode }: { mode: AuthMode }) {
                 {mode === 'login' && <div className="form-options"><Checkbox label={t('rememberMe')} checked={rememberMe} onCheckedChange={setRememberMe} /><Link to={authPath('forgot-password')}>{t('forgotPassword')}</Link></div>}
                 {needsCaptcha && <Captcha onToken={setCaptchaToken} resetKey={captchaReset} />}
                 <Button type="submit" className="primary full" busy={busy} disabled={needsCaptcha && !captchaToken}>{busy ? t('working') : t(mode === 'login' ? 'login' : mode === 'signup' ? 'signup' : mode === 'verify-email' ? 'resend' : mode === 'forgot-password' ? recoveryChallenge ? 'emails.recoveryVerify' : 'emails.sendCode' : 'resetPassword')}<Icon name="arrow" size={18} /></Button>
+                {mode === 'login' && browserSupportsWebAuthn() && <Button className="secondary full" disabled={busy} onClick={() => { void signInPasskey(); }}>{t('passkeys.signIn')}</Button>}
                 {mode === 'forgot-password' && recoveryChallenge && <Button className="text-button" disabled={busy} onClick={() => {
                     setRecoveryChallenge(undefined); setRecoveryCode(''); setError(undefined); setCaptchaToken(''); setCaptchaReset((value) => value + 1);
                 }}>{t('emails.recoveryStartOver')}</Button>}
@@ -443,7 +486,7 @@ function TwoFactorPage() {
             if (!current()) return;
             setCode('');
             if (!social) await completeBrowserLogin(result);
-            await refresh();
+            await refresh({ cancelRefetch: social });
             savePreference(locale);
             navigate(social ? flowPath(localizedPath(locale, 'social/complete')) : localizedPath(locale, 'account'), { replace: true });
         } catch (cause) { if (current()) setError(errorCode(cause)); }
@@ -523,7 +566,7 @@ function Protected({ adminOnly = false, developerOnly = false }: { adminOnly?: b
     if (!identity) return <Navigate to={flowPath(localizedPath(locale, 'login'))} replace />;
     if (adminOnly && identity.user.role !== 'admin') return <StatePage forbidden />;
     if (developerOnly && (identity.user.banned || !identity.user.emailVerified)) return <StatePage forbidden />;
-    return <Outlet />;
+    return <Suspense fallback={<Busy />}><Outlet /></Suspense>;
 }
 
 type AppArea = 'account' | 'developer' | 'admin';
@@ -563,6 +606,32 @@ function AppFrame({ area, title, home, navigationLabel, navigation }: AppFramePr
     const feedback = useFeedback();
     const dataActions = useDataActions();
     const captureSignOut = useClearSecrets(() => setBusy(false));
+    const { pathname, search } = useLocation();
+    const [navigationOpen, setNavigationOpen] = useState(false);
+    const navigationRef = useRef<HTMLElement>(null), navigationToggle = useRef<HTMLButtonElement>(null), mainRef = useRef<HTMLElement>(null);
+    useEffect(() => {
+        const narrow = window.matchMedia('(max-width: 760px)');
+        const preserveFocus = () => {
+            const active = document.activeElement;
+            if (narrow.matches && active instanceof HTMLElement && navigationRef.current?.contains(active)) {
+                setNavigationOpen(true);
+                active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            } else if (!narrow.matches && active === navigationToggle.current) {
+                const navigation = navigationRef.current;
+                (navigation?.querySelector<HTMLAnchorElement>('a[aria-current="page"]') ?? navigation?.querySelector<HTMLAnchorElement>('a[href]'))?.focus();
+            }
+        };
+        narrow.addEventListener('change', preserveFocus);
+        return () => narrow.removeEventListener('change', preserveFocus);
+    }, []);
+    useEffect(() => {
+        setNavigationOpen(false);
+        if (window.matchMedia('(max-width: 760px)').matches && navigationRef.current?.contains(document.activeElement)) {
+            const heading = mainRef.current?.querySelector('h1');
+            heading?.setAttribute('tabindex', '-1');
+            heading?.focus({ preventScroll: true });
+        }
+    }, [pathname]);
 
     async function signOut() {
         const current = captureSignOut();
@@ -584,12 +653,16 @@ function AppFrame({ area, title, home, navigationLabel, navigation }: AppFramePr
     return <div className="app-shell" data-area={area}>
         <aside className="sidebar">
             <Brand destination={home} />
-            <nav aria-label={navigationLabel}>{navigation}</nav>
+            <div className="mobile-navigation"><button ref={navigationToggle} className="navigation-toggle" type="button" aria-expanded={navigationOpen} aria-controls={`${area}-navigation`} onClick={() => setNavigationOpen(!navigationOpen)}><Icon name="menu" />{t('navigationMenu')}<span aria-hidden="true">{navigationOpen ? '−' : '+'}</span></button></div>
+            <nav ref={navigationRef} id={`${area}-navigation`} className={navigationOpen ? 'navigation-open' : undefined} aria-label={navigationLabel} onKeyDown={(event) => { if (event.key === 'Escape' && navigationOpen) { event.stopPropagation(); setNavigationOpen(false); navigationToggle.current?.focus(); } }}>{navigation}</nav>
             <AreaSwitcher area={area} title={title} />
         </aside>
         <div className="app-content">
             <header className="app-header"><div className="mobile-brand"><Brand destination={home} /></div><div className="header-actions"><LanguageSwitcher compact /><ThemeSwitcher /><AccountMenu busy={busy} onSignOut={() => { void signOut(); }} /></div></header>
-            <main className="page-content"><ConnectionNotice /><Outlet /></main>
+            <main ref={mainRef} className="page-content"><ConnectionNotice />
+                {area === 'admin' && pathname !== localizedPath(locale, 'admin/updates') && <UpdateNotice details={localizedPath(locale, 'admin/updates')} />}
+                <PageBoundary resetKey={pathname + search}><Suspense fallback={<Busy />}><Outlet /></Suspense></PageBoundary>
+            </main>
             <footer className="app-footer">{brand.name} <span>·</span> {t('openSource')}</footer>
         </div>
     </div>;
@@ -610,17 +683,32 @@ function AccountLayout() {
 function AdminLayout() {
     const { locale } = useApp();
     const { t } = useTranslation();
+    const machineRoles = useMatch(localizedPath(locale, 'admin/machines/roles'));
+    const rolePath = machineRoles ? 'admin/machines/roles' : 'admin/access/roles';
     return <AppFrame area="admin" title={t('adminConsole')} home={localizedPath(locale, 'admin/users')} navigationLabel={t('adminNavigation')}
         navigation={<>
-            <NavigationLink to={localizedPath(locale, 'admin/users')}><Icon name="users" />{t('users')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/applications')}><Icon name="globe" />{t('oauth.applications')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/access/resources')}><Icon name="globe" />{t('access.resources')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/access/roles')}><Icon name="shield" />{t('access.roles')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/machines/applications')}><Icon name="sessions" />{t('machines.applications')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/machines/roles')}><Icon name="shield" />{t('machines.roles')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/audit-logs')}><Icon name="sessions" />{t('access.audit')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/branding')}><ToolbarIcon name="settings" />{t('branding.title')}</NavigationLink>
-            <NavigationLink to={localizedPath(locale, 'admin/social-connections')}><Icon name="globe" />{t('social.title')}</NavigationLink></>} />;
+            <div className="navigation-group" role="group" aria-labelledby="admin-accounts">
+                <h2 id="admin-accounts">{t('administration.accounts')}</h2>
+                <NavigationLink to={localizedPath(locale, 'admin/users')}><Icon name="users" />{t('users')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, 'admin/social-connections')}><Icon name="globe" />{t('social.title')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, 'admin/branding')}><ToolbarIcon name="settings" />{t('branding.title')}</NavigationLink>
+            </div>
+            <div className="navigation-group" role="group" aria-labelledby="admin-applications">
+                <h2 id="admin-applications">{t('administration.applications')}</h2>
+                <NavigationLink to={localizedPath(locale, 'admin/applications')}><Icon name="globe" />{t('oauth.applications')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, 'admin/machines/applications')}><Icon name="sessions" />{t('machines.applications')}</NavigationLink>
+            </div>
+            <div className="navigation-group" role="group" aria-labelledby="admin-access">
+                <h2 id="admin-access">{t('administration.access')}</h2>
+                <NavigationLink to={localizedPath(locale, 'admin/access/resources')}><Icon name="globe" />{t('access.resources')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, rolePath)}><Icon name="shield" />{t('administration.roles')}</NavigationLink>
+            </div>
+            <div className="navigation-group" role="group" aria-labelledby="admin-operations">
+                <h2 id="admin-operations">{t('administration.operations')}</h2>
+                <NavigationLink to={localizedPath(locale, 'admin/audit-logs')}><Icon name="sessions" />{t('access.audit')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, 'admin/webhooks')}><Icon name="globe" />{t('webhooks.title')}</NavigationLink>
+                <NavigationLink to={localizedPath(locale, 'admin/updates')}><Icon name="settings" />{t('updates.title')}</NavigationLink>
+            </div></>} />;
 }
 
 function DeveloperLayout() {
@@ -716,7 +804,7 @@ function SecurityPage() {
             <TextField label={t('newPassword')} type="password" name="newPassword" autoComplete="new-password" value={newPassword} onValueChange={setNewPassword} minLength={8} maxLength={128} required supportingText={t('passwordHint')} />
             <TextField label={t('confirmPassword')} type="password" name="confirmPassword" autoComplete="new-password" value={confirmation} onValueChange={setConfirmation} minLength={8} maxLength={128} required />
         </SecurityDialog>}
-        <SocialSettings /><MfaSettings enabled={!!identity?.user.twoFactorEnabled} refresh={refresh} /></>}</>;
+        <SocialSettings /><MfaSettings enabled={!!identity?.user.twoFactorEnabled} refresh={refresh} /><Passkeys /><AccountDeletion /></>}</>;
 }
 
 function formatDate(value: string | undefined, locale: Locale): string {
@@ -802,9 +890,9 @@ function UsersPage() {
         setParameters(next);
     }
     const userPath = (id: string) => listPath(localizedPath(locale, 'admin/users/detail'), location.search, { id });
-    return <><PageHeading title={t('usersTitle')} description={t('usersDescription')} />{userQuery.error && <CursorRecovery cursor={cursor} onReset={() => navigatePage(null)} />}<section className="card user-table-card"><form className="search-bar" onSubmit={(event) => { event.preventDefault(); const value = query.trim(); setSearchDraft(undefined); setParameters(value ? { lookupField: field, lookupValue: value } : {}); }}><div className="search-field"><Select label={t('lookupField')} value={field} options={[{ value: 'email', label: t('email') }, { value: 'username', label: t('username') }, { value: 'id', label: t('accountId') }]} onChange={setField} /></div><div className="search-input"><TextField label={t('searchUsers')} value={query} onValueChange={setQuery} maxLength={254} supportingText={t('exactLookupHint')} /></div><Button className="secondary" type="submit">{t('search')}</Button></form>
+    return <><PageHeading title={t('usersTitle')} description={t('usersDescription')} />{userQuery.error && <CursorRecovery cursor={cursor} onReset={() => navigatePage(null)} />}<section className="card user-table-card"><form className="search-bar" onSubmit={(event) => { event.preventDefault(); const value = query.trim(); setSearchDraft(undefined); setParameters(value ? { lookupField: field, lookupValue: value } : {}); }}><div className="search-field"><Select label={t('lookupField')} value={field} options={[{ value: 'email', label: t('email') }, { value: 'username', label: t('username') }, { value: 'id', label: t('accountId') }]} onChange={setField} /></div><div className="search-input"><TextField label={t('searchUsers')} value={query} onValueChange={setQuery} maxLength={254} supportingText={t('lookupHints.' + field, { defaultValue: t('exactLookupHint') })} /></div><Button className="secondary" type="submit">{t('search')}</Button><SearchReset onReset={() => { setSearchDraft(undefined); setParameters({}); }} /></form>
         <ResourceFeedback query={userQuery} />
-        {data && <><div className="table-scroll"><table><thead><tr><th>{t('user')}</th><th>{t('status')}</th><th>{t('role')}</th><th>{t('joined')}</th><th><span className="sr-only">{t('userDetails')}</span></th></tr></thead><tbody>{data.items.map((user) => <tr key={user.id}><td><Link className="table-user" to={userPath(user.id)}><Avatar name={user.name} image={user.image} className="table-avatar" /><span><strong>{user.name}</strong><small>{user.email}</small></span></Link></td><td><UserStatus user={user} /></td><td><span className="role-label">{t(user.role === 'admin' ? 'admin' : 'user')}</span></td><td className="muted">{formatDate(user.createdAt, locale)}</td><td><ButtonLink variant="icon" to={userPath(user.id)} aria-label={`${t('userDetails')}: ${user.email}`}><Icon name="arrow" size={18} /></ButtonLink></td></tr>)}</tbody></table>{data.items.length === 0 && <p className="empty-state">{t('usersEmpty')}</p>}</div><PageNavigation pageInfo={data.pageInfo} count={data.items.length} cursor={cursor} onNavigate={navigatePage} /></>}
+        {data && <><div className="table-scroll"><table><thead><tr><th>{t('userColumn')}</th><th>{t('status')}</th><th>{t('role')}</th><th>{t('joined')}</th><th><span className="sr-only">{t('userDetails')}</span></th></tr></thead><tbody>{data.items.map((user) => <tr key={user.id}><td><Link className="table-user" to={userPath(user.id)}><Avatar name={user.name} image={user.image} className="table-avatar" /><span><strong>{user.name}</strong><small>{user.email}</small></span></Link></td><td><UserStatus user={user} /></td><td><span className="role-label">{t(user.role === 'admin' ? 'admin' : 'user')}</span></td><td className="muted">{formatDate(user.createdAt, locale)}</td><td><ButtonLink variant="icon" to={userPath(user.id)} aria-label={`${t('userDetails')}: ${user.email}`}><Icon name="arrow" size={18} /></ButtonLink></td></tr>)}</tbody></table>{data.items.length === 0 && <EmptyList message={t('usersEmpty')} />}</div><PageNavigation pageInfo={data.pageInfo} count={data.items.length} cursor={cursor} onNavigate={navigatePage} /></>}
     </section></>;
 }
 
@@ -835,7 +923,7 @@ function UserDetailPage() {
     return <>{confirmation && <ConfirmationDialog title={t(confirmation === 'ban-user' ? 'suspend' : 'revokeAll')} description={t(confirmation === 'ban-user' ? 'confirmSuspend' : 'confirmRevoke')} cancelLabel={t('cancel')} confirmLabel={t('confirm')} busy={busy} error={<ErrorNotice code={error} />} onCancel={() => { setConfirmation(undefined); setError(undefined); }} onConfirm={() => { void action(confirmation, true); }} />}<ButtonLink variant="text" className="detail-back" to={listPath(localizedPath(locale, 'admin/users'), location.search)}><Icon name="back" size={15} />{t('backToUsers')}</ButtonLink><PageHeading title={t('userDetails')} description={user?.email ?? ''}>{user && <Avatar name={user.name} image={user.image} className="profile-avatar" />}</PageHeading><ResourceFeedback query={userQuery} />{user && <>
         <section className="card"><div className="card-body user-detail-grid"><div><small>{t('name')}</small><strong>{user.name}</strong></div><div><small>{t('email')}</small><strong>{user.email}</strong></div><div><small>{t('status')}</small><UserStatus user={user} /></div><div><small>{t('role')}</small><strong>{t(user.role === 'admin' ? 'admin' : 'user')}</strong></div><div><small>{t('joined')}</small><strong>{formatDate(user.createdAt, locale)}</strong></div><div><small>{t('emailVerification')}</small><strong>{t(user.emailVerified ? 'verified' : 'unverified')}</strong></div><div className="full-width"><small>{t('accountId')}</small><code>{user.id}</code></div>{user.banReason && <div className="full-width"><small>{t('reason')}</small><strong>{user.banReason}</strong></div>}</div></section>
         <section className="card"><div className="card-heading"><h2>{t('manageUser')}</h2><p>{t('manageUserDescription')}</p></div><div className="card-body">{user.role === 'admin' ? <p className="muted">{t('adminProtected')}</p> : <div className="stack-form">{!confirmation && <ErrorNotice code={error} />}{!user.banned && <TextField label={t('reason')} type="textarea" value={reason} maxLength={500} placeholder={t('reasonPlaceholder')} onValueChange={setReason} />}<div className="action-row"><Button className={user.banned ? 'primary' : 'danger-button'} busy={busy} onClick={() => { void action(user.banned ? 'unban-user' : 'ban-user'); }}>{t(user.banned ? 'restore' : 'suspend')}</Button><Button className="secondary" busy={busy} onClick={() => { void action('revoke-user-sessions'); }}>{t('revokeAll')}</Button></div></div>}</div></section>
-        <UserBusinessRoles userId={user.id} />
+        <UserBusinessRoles userId={user.id} locale={locale} />
     </>}</>;
 }
 
@@ -863,6 +951,7 @@ function LocaleRoutes() {
             <Route path="forgot-password" element={<AuthPage mode="forgot-password" />} />
             <Route path="reset-password" element={<AuthPage mode="reset-password" />} />
             <Route path="consent" element={<ConsentPage />} />
+            <Route path="account-deleted" element={<AccountDeletionReceipt locale={locale} />} />
             <Route element={<Protected />}>
                 <Route element={<AccountLayout />}>
                     <Route path="account" element={<ProfilePage />} />
@@ -884,14 +973,17 @@ function LocaleRoutes() {
                         <Route path="admin" element={<Navigate to={localizedPath(locale, 'admin/users')} replace />} />
                         <Route path="admin/users" element={<UsersPage />} />
                         <Route path="admin/branding" element={<BrandingSettings />} />
+                        <Route path="admin/updates" element={<VersionUpdates />} />
                         <Route path="admin/social-connections" element={<SocialConnectionsPage />} />
                         <Route path="admin/access/resources" element={<ApiResourcesPage locale={locale} />} />
                         <Route path="admin/access/resources/detail" element={<ApiResourceDetailPage key={new URLSearchParams(search).get('id') ?? ''} locale={locale} />} />
-                        <Route path="admin/access/roles" element={<BusinessRolesPage />} />
+                        <Route path="admin/access/roles" element={<BusinessRolesPage locale={locale} />} />
                         <Route path="admin/machines/applications" element={<MachineApplicationsPage locale={locale} />} />
                         <Route path="admin/machines/applications/detail" element={<MachineApplicationDetailPage key={new URLSearchParams(search).get('clientId') ?? ''} locale={locale} />} />
-                        <Route path="admin/machines/roles" element={<MachineRolesPage />} />
+                        <Route path="admin/machines/roles" element={<MachineRolesPage locale={locale} />} />
                         <Route path="admin/audit-logs" element={<AuditLogsPage locale={locale} />} />
+                        <Route path="admin/webhooks" element={<WebhooksPage locale={locale} />} />
+                        <Route path="admin/webhooks/deliveries" element={<WebhookDeliveriesPage locale={locale} />} />
                         <Route path="admin/users/detail" element={<UserDetailPage key={new URLSearchParams(search).get('id') ?? ''} />} />
                         <Route path="admin/applications" element={<ApplicationsPage locale={locale} />} />
                         <Route path="admin/applications/detail" element={<ApplicationEditor key={`admin:${new URLSearchParams(search).get('clientId') ?? ''}`} locale={locale} />} />
@@ -928,6 +1020,6 @@ export default function App() {
     const pageScope = privatePage ? identity ? `${identity.user.id}:${identity.session.id}:${identity.user.role ?? 'user'}` : '' : 'authentication';
     return <AppContext.Provider value={context}><BrandingUpdates /><DataScope identity={identity}><PageStateProvider key={pageScope}>
         {loadError && <div className="global-error"><ErrorNotice code={loadError} /><Button type="button" className="text-button" onClick={() => { void identityQuery.refetch(); }}>{i18n.t('tryAgain')}</Button></div>}
-        {location.pathname === '/' ? (identity === undefined && !loadError ? <Busy /> : <Navigate to={{ pathname: localizedPath(locale, identity ? 'account' : 'login'), search: location.search, hash: location.hash }} replace />) : <LocaleRoutes />}
+        {location.pathname === '/' ? (identity === undefined && !loadError ? <Busy /> : <Navigate to={{ pathname: localizedPath(locale, identity ? 'account' : 'login'), search: location.search, hash: location.hash }} replace />) : <PageBoundary resetKey={location.pathname + location.search}><Suspense fallback={<Busy />}><LocaleRoutes /></Suspense></PageBoundary>}
     </PageStateProvider></DataScope></AppContext.Provider>;
 }

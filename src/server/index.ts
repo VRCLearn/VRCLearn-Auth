@@ -14,6 +14,7 @@ import { avatars } from './avatars';
 import { maximumImageBytes } from '../shared/image-limits';
 import { branding } from './branding';
 import { publicBranding, readBranding } from './branding-settings';
+import { mediaImageSources, publicMediaBase } from './public-assets';
 import { socialConnections, connection } from './social-connections';
 import { databaseRateLimit } from './rate-limit';
 import { browserRequest, browserRoutes, signOutBrowserAccount } from './browser-accounts';
@@ -22,8 +23,19 @@ import { auditLogs, auditRequestHeader, observeAudit } from './audit';
 import { machines } from './machines';
 import { managementApi } from './management-api';
 import { dispatch, runScheduled } from './runtime';
+import { deletionRoutes } from './account-deletion-routes';
+import { webhooks } from './webhooks';
+import { collectWebhookHistory, deliverWebhooks } from './webhook-delivery';
+import type { AuthRequestState } from './auth-errors';
 
 const routes: Record<string, readonly string[]> = {
+    '/passkey/generate-register-options': ['POST'],
+    '/passkey/generate-authenticate-options': ['GET'],
+    '/passkey/verify-registration': ['POST'],
+    '/passkey/verify-authentication': ['POST'],
+    '/passkey/list-user-passkeys': ['GET'],
+    '/passkey/update-passkey': ['POST'],
+    '/passkey/delete-passkey': ['POST'],
     '/sign-up/email': ['POST'],
     '/sign-in/email': ['POST'],
     '/sign-in/username': ['POST'],
@@ -67,6 +79,11 @@ const routes: Record<string, readonly string[]> = {
 };
 
 const fields: Record<string, readonly string[]> = {
+    '/passkey/generate-register-options': ['password'],
+    '/passkey/verify-registration': ['response', 'name'],
+    '/passkey/verify-authentication': ['response', 'oauth_query'],
+    '/passkey/update-passkey': ['id', 'name', 'password'],
+    '/passkey/delete-passkey': ['id', 'password'],
     '/sign-up/email': ['name', 'username', 'email', 'password', 'locale', 'callbackURL'],
     '/sign-in/email': ['email', 'password', 'rememberMe', 'callbackURL', 'oauth_query'],
     '/sign-in/username': ['username', 'password', 'rememberMe', 'callbackURL', 'oauth_query'],
@@ -102,6 +119,7 @@ const fields: Record<string, readonly string[]> = {
 };
 
 const privatePaths = new Set(['/update-user', '/verify-password', '/change-password', '/revoke-session', '/revoke-other-sessions',
+    '/passkey/generate-register-options', '/passkey/verify-registration', '/passkey/list-user-passkeys', '/passkey/update-passkey', '/passkey/delete-passkey',
     '/emails', '/emails/add', '/emails/resend', '/emails/verify', '/emails/set-primary', '/emails/remove',
     '/two-factor/enable', '/two-factor/disable', '/two-factor/generate-backup-codes',
     '/social/security', '/social/unlink', '/social/set-password', '/social/avatar-source']);
@@ -110,6 +128,9 @@ const app = new Hono<{ Bindings: Env }>();
 function logPath(path: string): string {
     if (path.startsWith('/api/management/')) return '/api/management/v1/:resource';
     if (path.startsWith('/api/admin/machines/')) return '/api/admin/machines/:resource';
+    if (path === '/api/admin/webhooks' || path === '/api/admin/webhooks/deliveries') return path;
+    if (/^\/api\/admin\/webhooks\/deliveries\/[^/]+(?:\/retry)?$/.test(path)) return '/api/admin/webhooks/deliveries/:id';
+    if (/^\/api\/admin\/webhooks\/[^/]+(?:\/rotate-secret)?$/.test(path)) return '/api/admin/webhooks/:id';
     if (path === '/api/admin/audit-logs') return path;
     if (/^\/api\/admin\/audit-logs\/[^/]+$/.test(path)) return '/api/admin/audit-logs/:id';
     if (/^\/api\/admin\/access\/(resources|roles|permissions)$/.test(path)) return path;
@@ -153,37 +174,33 @@ const headers = {
     referrerPolicy: 'no-referrer',
     xFrameOptions: 'DENY',
 } as const;
-const productionHeaders = secureHeaders({ ...headers, contentSecurityPolicy });
 const avatarHeaders = secureHeaders({ ...headers, crossOriginResourcePolicy: 'cross-origin', contentSecurityPolicy: { defaultSrc: ["'none'"], sandbox: [] } });
-const brandingHeaders = secureHeaders({ ...headers, contentSecurityPolicy: { defaultSrc: ["'none'"], styleSrc: ["'unsafe-inline'"], sandbox: [] } });
+const brandingHeaders = secureHeaders({ ...headers, crossOriginResourcePolicy: 'cross-origin', contentSecurityPolicy: { defaultSrc: ["'none'"], styleSrc: ["'unsafe-inline'"], sandbox: [] } });
 const publicLogoHeaders = secureHeaders({ ...headers, crossOriginResourcePolicy: 'cross-origin', contentSecurityPolicy: { defaultSrc: ["'none'"], styleSrc: ["'unsafe-inline'"], sandbox: [] } });
 // Native logout uses a browser form and its own document CSP. Send only the
 // origin as Referer so a same-origin form keeps a usable Origin header.
 const logoutHeaders = secureHeaders({ ...headers, referrerPolicy: 'strict-origin' });
-const developmentHeaders = secureHeaders({
-    ...headers,
-    contentSecurityPolicy: {
-        ...contentSecurityPolicy,
-        scriptSrc: [...contentSecurityPolicy.scriptSrc, "'unsafe-inline'"],
-        connectSrc: [...contentSecurityPolicy.connectSrc, 'ws://localhost:5173'],
-    },
-});
 app.use('*', (c, next) => {
     if (/^\/branding\/logos\/[^/]+$/.test(c.req.path)) return publicLogoHeaders(c, next);
     if (/^\/social\/icons\/[^/]+$/.test(c.req.path)) return brandingHeaders(c, next);
     if (/^\/avatars\/[^/]+$/.test(c.req.path)) return avatarHeaders(c, next);
     if (c.req.path === '/api/auth/oauth2/end-session' || c.req.path === '/api/auth/oauth2/end-session/confirm') return logoutHeaders(c, next);
-    return (c.env.APP_ENV === 'development' ? developmentHeaders : productionHeaders)(c, next);
+    const development = c.env.APP_ENV === 'development';
+    return secureHeaders({ ...headers, contentSecurityPolicy: {
+        ...contentSecurityPolicy,
+        imgSrc: [...contentSecurityPolicy.imgSrc, ...mediaImageSources(c.env)],
+        scriptSrc: [...contentSecurityPolicy.scriptSrc, ...(development ? ["'unsafe-inline'"] : [])],
+        connectSrc: [...contentSecurityPolicy.connectSrc, ...(development ? ['ws://localhost:5173'] : [])],
+    } })(c, next);
 });
 
 app.use('/api/*', async (c, next) => {
-    const started = Date.now();
     const requestId = c.req.header(auditRequestHeader)!;
     await next();
     c.header('Cache-Control', 'no-store');
     c.header('X-Request-ID', requestId);
-    if (c.env.APP_ENV === 'development' || c.res.status >= 500 || crypto.getRandomValues(new Uint32Array(1))[0]! < 0x1_0000_0000 * 0.01) {
-        console.log(JSON.stringify({ event: 'http_request', requestId, method: c.req.method, path: logPath(c.req.path), status: c.res.status, durationMs: Date.now() - started }));
+    if (c.res.status < 400 && c.env.requestWork?.webhooks) {
+        c.executionCtx.waitUntil(deliverWebhooks(c.env).catch(() => { console.error(JSON.stringify({ event: 'webhook_delivery_failed' })); }));
     }
 });
 app.use('/api/*', (c, next) => {
@@ -195,7 +212,6 @@ app.use('/api/*', (c, next) => {
 });
 app.use('/api/*', observeAudit);
 
-app.get('/api/health', (c) => c.json({ status: 'ok' }));
 app.get('/api/config', (c) => {
     validateConfig(c.env);
     return c.json({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY });
@@ -204,11 +220,13 @@ app.get('/api/config', (c) => {
 app.route('/api/admin/applications', applications);
 app.route('/api/admin/access', accessManagement);
 app.route('/api/admin/audit-logs', auditLogs);
+app.route('/api/admin/webhooks', webhooks);
 app.route('/api/admin/machines', machines);
 app.route('/api/management/v1', managementApi);
 app.route('/api/browser', browserRoutes);
 app.route('/api/developer/applications', developerApplications);
 app.route('/api/account/applications', accountApplications);
+app.route('/api/account', deletionRoutes);
 app.route('/api', management);
 app.route('/api/oauth', consent);
 app.route('/', avatars);
@@ -264,7 +282,7 @@ app.all('/api/auth/*', async (c) => {
         }
     }
 
-    const delivery = { failed: false };
+    const delivery: AuthRequestState = { failed: false };
     if (path === '/social/start' && body.purpose && body.purpose !== 'login') {
         const identity = await createAuth(c.env).api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
         if (!identity) return c.json({ code: 'UNAUTHORIZED' }, 401);
@@ -278,26 +296,35 @@ app.all('/api/auth/*', async (c) => {
     const selected = selectedId ? await connection(c.env, selectedId, !!callbackId || body.purpose === 'test') : null;
     if (selectedId && !selected) return c.json({ code: 'SOCIAL_CONNECTION_NOT_FOUND' }, 404);
     const auth = createAuth(c.env, delivery, (task) => c.executionCtx.waitUntil(task), selected ?? undefined, undefined, [], (await readBranding(c.env.DB)).name);
-    if (privatePaths.has(path) || path.startsWith('/admin/') || path === '/get-session') {
+    // The native get-session endpoint already validates its own session and user.
+    if (privatePaths.has(path) || path.startsWith('/admin/')) {
         const identity = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
-        if (!identity && path !== '/get-session') return c.json({ code: 'UNAUTHORIZED' }, 401);
+        if (!identity) return c.json({ code: 'UNAUTHORIZED' }, 401);
         if (identity) {
             if (identity.user.banned) return c.json({ code: 'USER_BANNED' }, 403);
             if (path.startsWith('/admin/')) {
                 if (identity.user.role !== 'admin') return c.json({ code: 'FORBIDDEN' }, 403);
                 if (c.req.method === 'POST') {
                     if (typeof body.userId !== 'string') return c.json({ code: 'INVALID_INPUT' }, 400);
-                    const target = await c.env.DB.prepare('SELECT "role" FROM "user" WHERE "id" = ?').bind(body.userId).first<{ role: string | null }>();
+                    const target = await c.env.DB.prepare('SELECT "role", "deletionRequestedAt" FROM "user" WHERE "id" = ?').bind(body.userId).first<{ role: string | null; deletionRequestedAt: number | null }>();
                     if (!target) return c.json({ code: 'USER_NOT_FOUND' }, 404);
                     if (target.role !== 'user') return c.json({ code: 'ADMIN_ACCOUNT_PROTECTED' }, 403);
+                    if (target.deletionRequestedAt !== null) return c.json({ code: 'ACCOUNT_DELETION_PENDING' }, 409);
                 }
             }
         }
     }
 
     const response = (path === '/sign-out' ? await signOutBrowserAccount(c.env, c.req.raw.headers) : null) ?? await auth.handler(c.req.raw);
+    if (path === '/get-session' && response.ok) {
+        const identity = await response.clone().json<{ user?: { banned?: boolean } } | null>();
+        if (identity?.user?.banned) return c.json({ code: 'USER_BANNED' }, 403);
+    }
     if (delivery.failed) return c.json({ code: 'EMAIL_DELIVERY_FAILED' }, 503);
     if (response.status >= 500) {
+        if (delivery.failure === 'PASSKEY_NOT_AVAILABLE' && ['/passkey/verify-authentication', '/two-factor/verify-totp', '/two-factor/verify-backup-code'].includes(path)) {
+            return c.json({ code: 'PASSKEY_NOT_AVAILABLE' }, 400);
+        }
         // A secondary reservation can win after the signup preflight. The
         // database rolls back signup; expose the same address-conflict result.
         if (path === '/sign-up/email' && typeof body.email === 'string') {
@@ -305,8 +332,8 @@ app.all('/api/auth/*', async (c) => {
                 .bind(body.email.toLowerCase()).first();
             if (reserved) return c.json({ code: 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL' }, 400);
         }
-        console.error(JSON.stringify({ event: 'auth_request_failed', path: logPath(c.req.path), status: response.status }));
-        return c.json({ code: 'REQUEST_FAILED' }, 503);
+        console.error(JSON.stringify({ event: 'auth_request_failed', requestId: c.req.header(auditRequestHeader), path: logPath(c.req.path), status: response.status, reason: delivery.failure ?? 'AUTH_INTERNAL_ERROR' }));
+        return c.json({ code: delivery.failure === 'TURNSTILE_UNAVAILABLE' ? 'TURNSTILE_UNAVAILABLE' : 'REQUEST_FAILED' }, 503);
     }
     return response;
 });
@@ -315,18 +342,22 @@ app.all('/api/*', (c) => c.json({ code: 'NOT_FOUND' }, 404));
 app.all('*', async (c) => {
     if (!['GET', 'HEAD'].includes(c.req.method)) return c.text('Method not allowed', 405);
     const page = /^\/(en-us|zh-cn)\/?$/.test(c.req.path)
-        || /^\/(en-us|zh-cn)\/(login|select-account|two-factor|social\/complete|signup|verify-email|verified|forgot-password|reset-password|consent|account|account\/emails|account\/security|account\/sessions|account\/applications|developer|developer\/applications|developer\/applications\/new|developer\/applications\/detail|admin|admin\/users|admin\/users\/detail|admin\/applications|admin\/applications\/detail|admin\/branding|admin\/social-connections|admin\/access\/resources|admin\/access\/resources\/detail|admin\/access\/roles|admin\/audit-logs|admin\/machines\/applications|admin\/machines\/applications\/detail|admin\/machines\/roles)\/?$/.test(c.req.path);
+        || /^\/(en-us|zh-cn)\/(login|select-account|two-factor|social\/complete|signup|verify-email|verified|forgot-password|reset-password|consent|account-deleted|account|account\/emails|account\/security|account\/sessions|account\/applications|developer|developer\/applications|developer\/applications\/new|developer\/applications\/detail|admin|admin\/users|admin\/users\/detail|admin\/applications|admin\/applications\/detail|admin\/branding|admin\/social-connections|admin\/access\/resources|admin\/access\/resources\/detail|admin\/access\/roles|admin\/audit-logs|admin\/webhooks|admin\/webhooks\/deliveries|admin\/updates|admin\/machines\/applications|admin\/machines\/applications\/detail|admin\/machines\/roles)\/?$/.test(c.req.path);
     const asset = c.req.path.startsWith('/assets/') || c.req.path === '/favicon.svg'
         || (c.env.APP_ENV === 'development' && ['/node_modules/', '/@', '/src/'].some((prefix) => c.req.path.startsWith(prefix)));
     if (c.req.path !== '/' && !page && !asset) return c.text('Not found', 404);
-    const response = await c.env.ASSETS.fetch(c.req.raw);
+    const response = await c.env.ASSETS.fetch(page || c.req.path === '/'
+        ? new Request(new URL('/', c.req.url), c.req.raw) : c.req.raw);
     const headers = new Headers(response.headers);
     if (headers.get('content-type')?.includes('text/html')) headers.set('Cache-Control', 'no-store');
     const document = new Response(response.body, { status: response.status, headers });
     if ((page || c.req.path === '/') && headers.get('content-type')?.includes('text/html')) {
-        const value = publicBranding(await readBranding(c.env.DB));
+        const value = publicBranding(await readBranding(c.env.DB), c.env);
         return new HTMLRewriter()
-            .on('html', { element(element) { element.setAttribute('data-branding', JSON.stringify(value).replace(/[<>&]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)); } })
+            .on('html', { element(element) {
+                element.setAttribute('data-branding', JSON.stringify(value).replace(/[<>&]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`));
+                element.setAttribute('data-public-assets-url', publicMediaBase(c.env) ?? '');
+            } })
             .on('title', { element(element) { element.setInnerContent(value.name); } })
             .on('meta[name="description"]', { element(element) { element.setAttribute('content', value.name.replaceAll('&', '&amp;')); } })
             .on('link[rel="icon"]', { element(element) { element.setAttribute('href', value.logoUrl); } }).transform(document);
@@ -335,7 +366,7 @@ app.all('*', async (c) => {
 });
 app.onError((error, c) => {
     if (error instanceof APIError) {
-        if (error.statusCode >= 400 && error.statusCode < 500) return new Response(JSON.stringify({ code: error.body?.code ?? 'INVALID_INPUT' }), { status: error.statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+        if (error.statusCode >= 400 && error.statusCode < 500) return new Response(JSON.stringify({ code: error.body?.code ?? 'INVALID_INPUT' }), { status: error.statusCode, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(error.statusCode === 429 ? { 'Retry-After': String(typeof error.body?.retryAfter === 'number' ? error.body.retryAfter : 60) } : {}) } });
     }
     c.header('Cache-Control', 'no-store');
     const configuration = error instanceof ConfigurationError;
@@ -344,15 +375,25 @@ app.onError((error, c) => {
 });
 
 export default {
-    fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+        const started = Date.now();
+        env = { ...env, requestWork: { webhooks: false } };
         const headers = new Headers(request.headers);
         headers.set(auditRequestHeader, crypto.randomUUID());
-        return dispatch(new Request(request, { headers }), env, ctx, (incoming, scoped, context) =>
+        const response = await dispatch(new Request(request, { headers }), env, ctx, (incoming, scoped, context) =>
             browserRequest(incoming, scoped, async (resolved) => app.fetch(resolved, scoped, context)));
+        if (new URL(request.url).pathname.startsWith('/api/')) response.headers.set('X-Request-ID', headers.get(auditRequestHeader)!);
+        if (new URL(request.url).pathname.startsWith('/api/') && (env.APP_ENV === 'development' || response.status >= 500 || crypto.getRandomValues(new Uint32Array(1))[0]! < 0x1_0000_0000 * 0.01)) {
+            console.log(JSON.stringify({ event: 'http_request', requestId: headers.get(auditRequestHeader), method: request.method, path: logPath(new URL(request.url).pathname), status: response.status, durationMs: Date.now() - started }));
+        }
+        return response;
     },
     async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
         ctx.waitUntil(runScheduled(env, async (scoped) => {
             const result = await maintainDatabase(scoped);
+            const webhooks = await deliverWebhooks(scoped);
+            await collectWebhookHistory(scoped);
+            console.log(JSON.stringify({ event: 'webhook_maintenance', ...webhooks }));
             console.log(JSON.stringify({ event: 'database_maintenance', ...result }));
         }).catch(() => {
             console.error(JSON.stringify({ event: 'database_maintenance_failed' }));

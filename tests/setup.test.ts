@@ -5,7 +5,9 @@ import worker from '../src/server/index';
 import type { Env } from '../src/server/config';
 import { advanceInstallation, instanceEnv, readInstallation } from '../src/server/setup';
 import { SetupCloudflare } from '../src/server/setup-cloudflare';
+import { reserveMail } from '../src/server/mail-budget';
 import { cookies } from './helpers';
+import { requiredMigrations, requireSchema } from '../src/server/schema-readiness';
 
 const canonical = 'https://auth.example.test';
 const progress = 'https://instance.account.workers.dev';
@@ -71,6 +73,8 @@ function fixture() {
     const advance = () => advanceInstallation(deployment, api);
     const initialize = async () => {
         await env.DB.prepare('CREATE TABLE lfReleaseLock (id INTEGER PRIMARY KEY, owner TEXT NOT NULL, expiresAt INTEGER NOT NULL)').run();
+        await env.DB.prepare('CREATE TABLE lfReleaseMigration (name TEXT PRIMARY KEY, digest TEXT NOT NULL)').run();
+        await env.DB.batch(requiredMigrations.map(({ name, digest }) => env.DB.prepare('INSERT INTO lfReleaseMigration (name, digest) VALUES (?, ?)').bind(name, digest)));
         await Promise.all([advance(), advance()]);
         for (let i = 0; i < 8 && (await readInstallation(env.DB))?.step !== 'ready'; i++) {
             await env.DB.prepare('UPDATE lfInstallation SET retryAt = 0').run();
@@ -102,11 +106,82 @@ it('continues setup across Worker builds, creates one key, and removes only the 
     expect(f.patches).toEqual([{ secrets: { CF_SETUP_TOKEN: null, SETUP_ORIGIN: null, SETUP_ADMIN_EMAIL: null } }]);
     expect(f.secrets).toEqual(['UNRELATED']);
     const rebuilt = { ...f.deployment, CF_SETUP_TOKEN: undefined, SETUP_ORIGIN: undefined, SETUP_ADMIN_EMAIL: undefined, LOGINFLARE_BUILD_ID: 'new-build' };
-    expect((await f.request('/api/health', undefined, canonical, rebuilt)).status).toBe(503);
+    expect((await f.request('/api/health', undefined, canonical, rebuilt)).status).toBe(200);
+    expect((await f.request('/api/readiness', undefined, canonical, rebuilt)).status).toBe(503);
     expect((await f.request('/', undefined, progress, rebuilt)).headers.get('Location')).toBe(canonical + '/setup');
     expect((await instanceEnv(rebuilt, initial!)).BETTER_AUTH_SECRET).toBe((await instanceEnv(f.deployment, initial!)).BETTER_AUTH_SECRET);
     expect((await f.request('/api/setup/status', undefined, progress, rebuilt)).status).toBe(200);
     expect((await f.request('/api/maintenance/status')).status).toBe(404);
+});
+
+it('checks uncached instance material for readiness and keeps liveness independent', async () => {
+    const f = fixture();
+    await f.initialize();
+    await env.DB.prepare('UPDATE lfInstallation SET completedAt = ?').bind(Date.now()).run();
+    const row = (await readInstallation(env.DB))!;
+    await instanceEnv(f.deployment, row);
+    const ready = await f.request('/api/readiness');
+    expect(ready.status).toBe(200);
+    expect(ready.headers.get('Cache-Control')).toBe('no-store');
+    const original = await (await f.deployment.PRIVATE!.get('installation.json'))!.text();
+    await f.deployment.PRIVATE!.put('installation.json', original + ' ');
+    expect(await (await f.request('/api/readiness')).json()).toEqual({ status: 'unavailable' });
+    expect((await f.request('/api/readiness')).status).toBe(503);
+    expect((await f.request('/api/health')).status).toBe(200);
+    await f.deployment.PRIVATE!.delete('installation.json');
+    expect((await f.request('/api/readiness')).status).toBe(503);
+});
+
+it('blocks business and readiness for missing migrations while leaving setup and liveness available', async () => {
+    const f = fixture();
+    await f.initialize();
+    await env.DB.prepare('UPDATE lfInstallation SET completedAt = ?').bind(Date.now()).run();
+    const migration = requiredMigrations.at(-1)!;
+    await env.DB.prepare('DELETE FROM lfReleaseMigration WHERE name = ?').bind(migration.name).run();
+    expect((await f.request('/api/health')).status).toBe(200);
+    expect((await f.request('/api/setup/status', undefined, progress)).status).toBe(200);
+    expect((await f.request('/api/readiness')).status).toBe(503);
+    const blocked = await f.request('/api/auth/get-session');
+    expect(blocked.status).toBe(503);
+    expect(await blocked.json()).toEqual({ code: 'SCHEMA_UPGRADE_REQUIRED' });
+    await env.DB.prepare('INSERT INTO lfReleaseMigration (name, digest) VALUES (?, ?)').bind(migration.name, migration.digest).run();
+    expect((await f.request('/api/readiness')).status).toBe(200);
+    expect((await f.request('/api/auth/get-session')).status).toBe(200);
+});
+
+it('shares schema reads within one instance, checks fresh readiness and never reuses another identity', async () => {
+    const f = fixture();
+    await f.initialize();
+    const read = vi.spyOn(env.DB, 'prepare');
+    try {
+        await Promise.all([requireSchema(env.DB, 'instance-one'), requireSchema(env.DB, 'instance-one')]);
+        await requireSchema(env.DB, 'instance-one');
+        expect(read.mock.calls.filter(([sql]) => sql.startsWith('SELECT name, digest')).length).toBe(1);
+        await requireSchema(env.DB, 'instance-two');
+        await requireSchema(env.DB, 'instance-two', true);
+        expect(read.mock.calls.filter(([sql]) => sql.startsWith('SELECT name, digest')).length).toBe(3);
+    } finally { read.mockRestore(); }
+});
+
+it('does not report dependency failures as healthy readiness', async () => {
+    const f = fixture();
+    const prepare = vi.spyOn(env.DB, 'prepare').mockImplementation(() => { throw new Error('private database failure'); });
+    try {
+        expect((await f.request('/api/health')).status).toBe(200);
+        const response = await f.request('/api/readiness');
+        expect(response.status).toBe(503);
+        expect(await response.text()).not.toContain('private database failure');
+    } finally { prepare.mockRestore(); }
+});
+
+it('returns a retryable quota response without sending a setup invitation', async () => {
+    const f = fixture(); await f.initialize();
+    for (let i = 0; i < 3; i++) await reserveMail(env.DB, adminEmail);
+    const denied = await f.request('/api/setup/invite', { locale: 'en-US' });
+    expect(denied.status).toBe(429); expect(await denied.json()).toEqual({ code: 'TOO_MANY_REQUESTS' });
+    expect(Number(denied.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect(f.messages).toHaveLength(0);
+    expect((await readInstallation(env.DB))?.invitationHash).toBeNull();
 });
 
 it('reports a conflicting DNS record without overwriting it', async () => {

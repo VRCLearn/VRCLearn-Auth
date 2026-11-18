@@ -4,10 +4,16 @@ import { cloudflare } from '@cloudflare/vite-plugin';
 import { brandColors } from './src/shared/brand-colors.ts';
 import { defaultBranding } from './src/shared/branding.ts';
 import { randomUUID } from 'node:crypto';
-import { validateDeploymentConfiguration } from './scripts/deployment.mjs';
+import { deploymentConfigPath, deploymentConfigSource, validateDeploymentConfiguration } from './scripts/deployment.mjs';
+import { loadRelease, sourceCommit as checkoutCommit, sourceRepository } from './scripts/release-manifest.mjs';
+import { updateRepository } from './src/shared/releases.ts';
+const { bundle, manifest } = loadRelease(process.cwd());
+const sourceCommit = checkoutCommit(process.cwd());
+const originRepository = sourceRepository(process.cwd());
 
 const applicationBuild = process.env.WORKERS_CI_BUILD_UUID ?? randomUUID();
 export default defineConfig(({ mode }) => ({
+    define: { __LOGINFLARE_MIGRATIONS__: JSON.stringify(bundle.migrations.map(({ name, hash }) => ({ name, digest: hash }))) },
     cacheDir: 'node_modules/.vite/loginflare',
     optimizeDeps: { include: ['@xmldom/xmldom'] },
     plugins: [{
@@ -32,7 +38,7 @@ export default defineConfig(({ mode }) => ({
             });
         },
     }, react(), cloudflare({
-        configPath: process.env.LOGINFLARE_CONFIG ?? (mode === 'deployment' || process.env.WORKERS_CI === '1' ? 'wrangler.jsonc' : 'wrangler.local.jsonc'),
+        configPath: mode === 'deployment' || process.env.WORKERS_CI === '1' ? deploymentConfigPath() : process.env.LOGINFLARE_CONFIG ?? 'wrangler.local.jsonc',
         persistState: { path: '.cloudflare/state' },
         config: (configuration) => {
             if (!configuration.name) throw new Error('The selected Worker configuration must have a name.');
@@ -42,6 +48,11 @@ export default defineConfig(({ mode }) => ({
                 ...configuration.vars,
                 LOGINFLARE_WORKER_NAME: configuration.name,
                 LOGINFLARE_BUILD_ID: configuration.vars?.APP_ENV === 'development' ? 'development' : applicationBuild,
+                LOGINFLARE_SOURCE_COMMIT: sourceCommit,
+                LOGINFLARE_RELEASE_VERSION: manifest.version,
+                LOGINFLARE_UPDATE_REPOSITORY: updateRepository(configuration.vars?.LOGINFLARE_UPDATE_REPOSITORY ?? originRepository) ?? '',
+                LOGINFLARE_MIGRATION_HASH: bundle.hash,
+                ...(mode === 'deployment' ? { LOGINFLARE_CONFIG_DIGEST: deploymentConfigSource(process.cwd(), mode).digest } : {}),
                 ...(account ? { LOGINFLARE_ACCOUNT_ID: account } : {}),
             } };
         },

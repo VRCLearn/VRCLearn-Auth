@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from 'better-auth/crypto';
 import { snapshotLocal } from './local-snapshot.mjs';
+import { authenticator } from '../tests/passkey-authenticator.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arguments_ = process.argv.slice(2).filter((argument) => argument !== '--');
@@ -42,6 +43,8 @@ await build.write({ dir: bridgeDirectory, format: 'esm', entryFileNames: 'scale-
 await build.close();
 const bridgeFile = join(bridgeDirectory, 'scale-worker.js');
 await writeFile(bridgeFile, (await readFile(bridgeFile, 'utf8')).replaceAll('loginflare:production', relative(bridgeDirectory, productionFile).replaceAll('\\', '/')));
+const bridgeModules = (await readdir(bridgeDirectory, { recursive: true })).filter((file) => file.endsWith('.js') && file !== 'scale-worker.js')
+    .map((file) => ({ type: 'ESModule', path: join(bridgeDirectory, file) }));
 const productionModules = (await readdir(dirname(productionFile), { recursive: true })).filter((file) => file.endsWith('.js'))
     .map((file) => ({ type: 'ESModule', path: join(dirname(productionFile), file) }));
 
@@ -86,10 +89,11 @@ async function findSqlite(path) {
 function miniflare(state, authenticationSecret = secret) {
     assertIsolated(state);
     return new Miniflare(convertV4MiniflareOptions({
-        name: 'loginflare-isolated-scale', modules: [{ type: 'ESModule', path: bridgeFile }, ...productionModules], modulesRoot: root,
+        name: 'loginflare-isolated-scale', modules: [{ type: 'ESModule', path: bridgeFile }, ...bridgeModules, ...productionModules], modulesRoot: root,
         compatibilityDate: '2026-10-26', compatibilityFlags: ['nodejs_compat'],
         host: '127.0.0.1', port: 0, log: new Log(LogLevel.NONE),
         d1Databases: { DB: databaseId }, r2Buckets: { AVATARS: 'isolated-scale-avatars' }, resourcePersistencePath: state,
+        ratelimits: { REQUEST_LIMITER: { namespace_id: '1001', simple: { limit: 600, period: 60 } } },
         bindings: { APP_ENV: 'development', AUTH_URL: origin, EMAIL_FROM: 'scale@example.test', TURNSTILE_SITE_KEY: '1x00000000000000000000AA', TURNSTILE_SECRET_KEY: '1x0000000000000000000000000000000AA', BETTER_AUTH_SECRET: authenticationSecret, SCALE_ACCESS_KEY: accessKey },
         outboundService: async (request) => {
             if (request.url === 'https://challenges.cloudflare.com/turnstile/v0/siteverify' && request.method === 'POST') {
@@ -206,6 +210,11 @@ try {
             const signedIn = await checked('/api/auth/sign-in/email', { method: 'POST', body: { email: 'scale-0@example.test', password: fixturePassword }, headers: { 'x-captcha-response': 'isolated-scale-test-token' } });
             const cookie = signedIn.headers.getSetCookie().map((value) => value.split(';', 1)[0]).join('; ');
             await signedIn.arrayBuffer();
+            const passkey = await authenticator();
+            const registration = await checked('/api/auth/passkey/generate-register-options', { method: 'POST', cookie, body: { password: fixturePassword } });
+            const registrationCookie = cookie + '; ' + registration.headers.getSetCookie().map((value) => value.split(';', 1)[0]).join('; ');
+            const registrationOptions = await registration.json();
+            const registeredPasskey = await (await checked('/api/auth/passkey/verify-registration', { method: 'POST', cookie: registrationCookie, body: { response: await passkey.registration(registrationOptions.challenge), name: 'Isolated recovery fixture' } })).json();
             const created = await (await checked('/api/admin/applications', { method: 'POST', cookie, body: { name: 'Scale native refresh client', type: 'spa', redirectUris: [callback], postLogoutRedirectUris: ['https://scale-client.example.test/'], scopes: ['openid', 'profile', 'email', 'offline_access'] } })).json();
             const nativeClient = created.application.clientId;
             const redirect = async (response) => {
@@ -326,6 +335,14 @@ try {
             if (!restoredTokens.refresh_token || restoredTokens.refresh_token === refreshTokens[0]) throw new Error('Restored database did not rotate the saved native refresh token.');
             result.restore.restoredAuth = true;
             result.restore.refreshRotated = true;
+            const flow = await (await checked('/api/browser/auth-flows', { method: 'POST', cookie, body: { kind: 'login', locale: 'en-US' } })).json();
+            const flowHeaders = { 'X-Loginflare-Flow': flow.flowId };
+            const authentication = await checked('/api/auth/passkey/generate-authenticate-options', { cookie, headers: flowHeaders });
+            const passkeyCookie = cookie + '; ' + authentication.headers.getSetCookie().map((value) => value.split(';', 1)[0]).join('; ');
+            const authenticationOptions = await authentication.json();
+            const passkeyIdentity = await (await checked('/api/auth/passkey/verify-authentication', { method: 'POST', cookie: passkeyCookie, headers: flowHeaders, body: { response: await passkey.assertion(authenticationOptions.challenge) } })).json();
+            if (passkeyIdentity.user?.id !== userId(0) || !registeredPasskey.id) throw new Error('Restored passkey did not authenticate the original account.');
+            result.restore.passkeyAuthenticated = true;
             result.databaseBytesAfter = (await stat(databaseFile)).size;
             await save();
         } finally { await mf.dispose(); }

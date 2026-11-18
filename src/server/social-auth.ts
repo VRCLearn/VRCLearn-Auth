@@ -275,9 +275,8 @@ export function socialAuthentication(env: Env, selected?: LoadedConnection) {
                 do { crypto.getRandomValues(values); number = values[0]!; } while (number >= 4_294_000_000);
                 const code = String(number % 1_000_000).padStart(6, '0');
                 data.email = ctx.body.email; data.codeHash = await digest(`${flow.id}:${code}`);
-                await save(flow, data, 'code');
-                try { await sendEmailCode(env, { email: data.email, name: data.profile?.name ?? '', locale: data.locale }, code, 'social'); }
-                catch { await env.DB.prepare('DELETE FROM "socialFlow" WHERE "id" = ?').bind(flow.id).run(); fail('EMAIL_DELIVERY_FAILED'); }
+                try { await sendEmailCode(env, { email: data.email, name: data.profile?.name ?? '', locale: data.locale }, code, 'social', async () => { await save(flow, data, 'code'); }); }
+                catch (error) { if (error instanceof APIError) throw error; await env.DB.prepare('DELETE FROM "socialFlow" WHERE "id" = ?').bind(flow.id).run(); fail('EMAIL_DELIVERY_FAILED'); }
                 return ctx.json({ status: true });
             }),
             socialVerifyEmail: createAuthEndpoint('/social/verify-email', { method: 'POST', body: codeInput }, async (ctx) => {
@@ -324,7 +323,7 @@ export function socialAuthentication(env: Env, selected?: LoadedConnection) {
                 const user = ctx.context.session.user;
                 const identities = (await env.DB.prepare(`SELECT a."id", a."providerId", a."accountId", c."name", c."type", c."iconId", (c."enabled" = 1 AND c."archived" = 0) AS "enabled"
                     FROM "account" a JOIN "socialConnection" c ON c."id" = a."providerId" WHERE a."userId" = ? ORDER BY c."position", c."id"`).bind(user.id)
-                    .all<{ id: string; providerId: string; accountId: string; name: string; type: ConnectionType; iconId: string | null; enabled: number }>()).results.map(({ iconId, ...item }) => ({ ...item, enabled: !!item.enabled, iconUrl: socialIconUrl(iconId) }));
+                    .all<{ id: string; providerId: string; accountId: string; name: string; type: ConnectionType; iconId: string | null; enabled: number }>()).results.map(({ iconId, ...item }) => ({ ...item, enabled: !!item.enabled, iconUrl: socialIconUrl(env, iconId) }));
                 const credential = await ctx.context.internalAdapter.findCredentialAccount(user.id);
                 const cookie = ctx.context.createAuthCookie('security_proof'), proofId = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
                 const proof = proofId ? await env.DB.prepare('SELECT "purpose", "expiresAt" FROM "securityProof" WHERE "id" = ? AND "userId" = ? AND "sessionId" = ? AND "used" = 0 AND "expiresAt" > ?')

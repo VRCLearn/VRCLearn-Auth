@@ -1,4 +1,4 @@
-import { expect, test, switchArea, type Page } from './fixtures';
+import { expect, test, switchArea, type Page, openNavigation } from './fixtures';
 import { testOrigin } from './runtime';
 import type { BrowserContext } from '@playwright/test';
 import type { Identity } from '../../src/client/api';
@@ -41,6 +41,7 @@ async function mockAccount(context: BrowserContext) {
         else if (url.pathname === '/api/browser/auth-flows' && req.method() === 'POST') result = { flowId: '00000000-0000-4000-8000-000000000001' };
         else if (url.pathname.startsWith('/api/browser/auth-flows/') && req.method() === 'DELETE') result = { status: true };
         else if (url.pathname === '/api/auth/get-session') result = structuredClone(state.actor);
+        else if (url.pathname === '/api/auth/passkey/list-user-passkeys') result = [];
         else if (url.pathname === '/api/auth/social/security') result = { hasPassword: true, identities: [], providers: [] };
         else if (url.pathname === '/api/social/providers') result = { providers: [] };
         else if (url.pathname === '/api/config') result = { turnstileSiteKey: '1x00000000000000000000AA' };
@@ -50,6 +51,10 @@ async function mockAccount(context: BrowserContext) {
             if (!state.actor) { status = 401; result = { code: 'UNAUTHORIZED' }; }
             else if (req.method() !== 'POST' || req.postDataJSON()?.password !== 'test-only-password') { status = 400; result = { code: 'INVALID_PASSWORD' }; }
             else result = { status: true };
+        }
+        else if (url.pathname === '/api/auth/two-factor/disable') {
+            if (state.actor) state.actor.user.twoFactorEnabled = false;
+            result = { status: true };
         }
         else if (url.pathname === '/api/auth/update-user') {
             const body = req.postDataJSON();
@@ -90,6 +95,107 @@ async function visibility(page: Page, visible: boolean) {
         Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visible ? 'visible' : 'hidden' });
         document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     }, visible);
+}
+
+for (const locale of ['en-us', 'zh-cn']) {
+    const zh = locale === 'zh-cn';
+    test(`reads fresh MFA state after a write overtakes a background identity read in ${locale}`, async ({ page, context }) => {
+        const server = await mockAccount(context);
+        server.state.actor!.user.twoFactorEnabled = true;
+        await page.goto(`/${locale}/account/security`);
+        const turnOff = zh ? '关闭双重验证' : 'Turn off two-factor authentication';
+        await page.getByRole('button', { name: turnOff, exact: true }).click();
+        const dialog = page.locator('md-dialog');
+        await dialog.getByRole('textbox').fill('test-only-password');
+        await dialog.getByRole('button', { name: zh ? '验证并继续' : 'Verify and continue', exact: true }).click();
+        await expect(dialog.getByRole('button', { name: turnOff, exact: true })).toBeEnabled();
+        let release!: () => void;
+        server.state.readGate = new Promise<void>((resolve) => { release = resolve; });
+        const before = server.count(page, '/api/auth/get-session');
+        await page.evaluate(() => {
+            const channel = new BroadcastChannel('loginflare-account-data');
+            channel.postMessage({ type: 'accounts' }); channel.close();
+        });
+        await expect.poll(() => server.count(page, '/api/auth/get-session')).toBe(before + 1);
+        const changed = page.waitForResponse((response) => response.url().endsWith('/api/auth/two-factor/disable'));
+        await dialog.getByRole('button', { name: turnOff, exact: true }).click();
+        expect((await changed).status()).toBe(200);
+        expect(server.state.actor!.user.twoFactorEnabled).toBe(false);
+        server.state.readGate = undefined; release();
+        await expect(page.getByText(zh ? '双重验证未开启。' : 'Two-factor authentication is off.', { exact: true })).toBeVisible();
+        await expect(page.getByRole('button', { name: zh ? '设置验证器' : 'Set up authenticator', exact: true })).toBeVisible();
+        expect(server.count(page, '/api/auth/get-session')).toBeGreaterThanOrEqual(before + 2);
+    });
+
+    for (const cached of [false, true]) test(`honors account-menu Retry-After with ${cached ? 'cached' : 'no cached'} accounts in ${locale}`, async ({ page, context }) => {
+        const server = await mockAccount(context);
+        let attempts = 0, blocked = !cached;
+        await context.route(`${testOrigin}/api/browser/accounts`, async (route) => {
+            attempts++;
+            if (blocked) await route.fulfill({ status: 429, json: { code: 'TOO_MANY_REQUESTS' }, headers: { 'Retry-After': '60' } });
+            else await route.fulfill({ json: { accounts: [{ id: 'browser-alpha', user: server.state.actor!.user, status: 'active', lastUsedAt: new Date().toISOString() }], maximumAccounts: 5 } });
+        });
+        await page.clock.install();
+        await page.goto(`/${locale}/account`);
+        const trigger = page.getByRole('button', { name: zh ? '账号菜单' : 'Account menu', exact: true });
+        const dialog = page.getByRole('dialog'), retry = dialog.getByRole('button', { name: zh ? '重试' : 'Try again', exact: true });
+        expect(attempts).toBe(0);
+        await trigger.click();
+        if (cached) {
+            await expect(dialog.getByText('Account alpha', { exact: true })).toBeVisible();
+            await trigger.click(); blocked = true;
+            await page.clock.fastForward(16_000);
+            await trigger.click();
+        }
+        await expect(dialog.getByRole('alert')).toBeVisible();
+        await expect(retry).toBeDisabled();
+        await expect(dialog.getByText(zh ? '加载中…' : 'Loading…', { exact: true })).toHaveCount(0);
+        const denied = attempts;
+        for (let i = 0; i < 2; i++) { await trigger.click(); await trigger.click(); }
+        // Keep browser interaction time safely inside the 60-second waiting window.
+        await page.clock.fastForward(30_000);
+        await visibility(page, false); await visibility(page, true);
+        expect(attempts).toBe(denied);
+        await expect(retry).toBeDisabled();
+        blocked = false;
+        await page.clock.fastForward(31_000);
+        if (cached) { await trigger.click(); await trigger.click(); }
+        else { await expect(retry).toBeEnabled(); await retry.click(); }
+        await expect(dialog.getByText('Account alpha', { exact: true })).toBeVisible();
+        await expect(dialog.getByRole('alert')).toHaveCount(0);
+        expect(attempts).toBe(denied + 1);
+    });
+
+    for (const standalone of [false, true]) test(`recovers a failed ${standalone ? 'standalone' : 'account'} page chunk in ${locale}`, async ({ page, context }) => {
+        const server = await mockAccount(context);
+        if (standalone) server.state.actor = null;
+        const chunk = standalone ? /\/assets\/AccountDeletion-[^/]+\.js$/ : /\/assets\/Emails-[^/]+\.js$/;
+        const destination = `/${locale}/${standalone ? 'account-deleted' : 'account/emails'}`;
+        await context.route(chunk, (route) => route.abort('failed'));
+        if (standalone) await page.goto(destination);
+        else {
+            await page.goto(`/${locale}/account`);
+            await openNavigation(page);
+            await page.getByRole('link', { name: zh ? '邮箱管理' : 'Email addresses', exact: true }).click();
+        }
+        const failure = page.getByRole('heading', { name: zh ? '页面未能加载' : 'Unable to load this page', exact: true });
+        await expect(failure).toBeVisible();
+        await expect(page.getByRole('alert')).toBeVisible();
+        if (!standalone) {
+            await expect(page.getByRole('button', { name: zh ? '账号菜单' : 'Account menu', exact: true })).toBeVisible();
+            await openNavigation(page);
+            await page.getByRole('link', { name: zh ? '个人资料' : 'Profile', exact: true }).click();
+            await expect(page.getByRole('heading', { name: zh ? '个人资料' : 'Your profile', exact: true })).toBeVisible();
+            await openNavigation(page);
+            await page.getByRole('link', { name: zh ? '邮箱管理' : 'Email addresses', exact: true }).click();
+            await expect(failure).toBeVisible();
+        }
+        await context.unroute(chunk);
+        await page.getByRole('button', { name: zh ? '重新加载页面' : 'Reload page', exact: true }).click();
+        await expect(page.getByRole('heading', { name: standalone ? zh ? '已提交账号注销' : 'Account deletion requested' : zh ? '邮箱管理' : 'Email addresses', exact: true })).toBeVisible();
+        await expect(failure).toHaveCount(0);
+        await expect(page).toHaveURL(destination);
+    });
 }
 
 for (const [locale, width] of [['en-us', 1280], ['zh-cn', 375]] as const) {
@@ -141,7 +247,8 @@ for (const [path, endpoint] of [
         await expect(page.locator('.page-heading')).toBeVisible();
         release();
         await expect(loading).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
+        await expect(page.locator('.pagination small')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Next', exact: true })).toHaveCount(0);
     });
 }
 
@@ -157,6 +264,7 @@ test('keeps security settings hidden after an initial read failure and recovers 
     await expect(page.locator('.page-content .card')).toHaveCount(0);
     failing = false;
     await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Passkeys', exact: true }).getByText('No passkeys registered.', { exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Change password', exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Set up authenticator', exact: true })).toBeEnabled();
@@ -289,7 +397,7 @@ for (const [role, width] of [['admin', 1280], ['admin', 800], ['admin', 375], ['
         if (role === 'admin') {
             await expect(area).toHaveAccessibleName('Switch area: Account center');
             const triggerBounds = (await area.boundingBox())!;
-            const navigationBounds = (await page.getByRole('navigation', { name: 'Account navigation', exact: true }).boundingBox())!;
+            const navigationBounds = (await (width > 760 ? page.getByRole('navigation', { name: 'Account navigation', exact: true }) : page.locator('.mobile-navigation')).boundingBox())!;
             expect(triggerBounds.y).toBeGreaterThanOrEqual(navigationBounds.y + navigationBounds.height);
             if (width > 760) expect(triggerBounds.y + triggerBounds.height).toBeGreaterThan(812 - 64);
             await area.press('ArrowDown');
@@ -307,7 +415,7 @@ for (const [role, width] of [['admin', 1280], ['admin', 800], ['admin', 375], ['
             expect(bounds!.x).toBeGreaterThanOrEqual(0);
             expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
             expect(bounds!.y).toBeGreaterThanOrEqual(0);
-            expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(triggerBounds.y);
+            expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(width > 760 ? triggerBounds.y : 812);
             expect(await page.locator('.sidebar').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
             await page.keyboard.press('Enter');
             await expect(page).toHaveURL('/en-us/admin/users');
@@ -315,11 +423,20 @@ for (const [role, width] of [['admin', 1280], ['admin', 800], ['admin', 375], ['
             await expect(page.getByRole('navigation', { name: 'Account navigation', exact: true })).toHaveCount(0);
         } else {
             await expect(area).toHaveAccessibleName('Switch area: Account center');
-            await area.click();
-            await expect(page.getByRole('menuitem', { name: 'Developer center', exact: true })).toBeVisible();
-            await expect(page.getByRole('menuitem', { name: 'Administration', exact: true })).toHaveCount(0);
-            await page.keyboard.press('Escape');
+            const lifecycle = await page.locator('.area-selector md-menu').evaluateHandle((menu) => ({
+                opened: new Promise<void>((resolve) => menu.addEventListener('opened', () => resolve(), { once: true })),
+                closed: new Promise<void>((resolve) => menu.addEventListener('closed', () => resolve(), { once: true })),
+            }));
+            try {
+                await area.click();
+                await lifecycle.evaluate((events) => events.opened);
+                await expect(page.getByRole('menuitem', { name: 'Developer center', exact: true })).toBeVisible();
+                await expect(page.getByRole('menuitem', { name: 'Administration', exact: true })).toHaveCount(0);
+                await page.keyboard.press('Escape');
+                await lifecycle.evaluate((events) => events.closed);
+            } finally { await lifecycle.dispose(); }
         }
+        await openNavigation(page);
         await expect(page.getByRole('navigation', { name: role === 'admin' ? 'Administration navigation' : 'Account navigation', exact: true })).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
         expect(await page.locator('.sidebar').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -351,7 +468,7 @@ for (const width of [1280, 375]) test(`keeps account and administration layout s
     ]) {
         await page.goto(path);
         await expect(page.locator(ready).first()).toBeVisible();
-        if (name === 'user') await expect(page.getByText('No business roles assigned.', { exact: true })).toBeVisible();
+        if (name === 'user') await expect(page.getByText('No user roles assigned.', { exact: true })).toBeVisible();
         await expect(page.getByRole('button', { name: /^(Refresh data|刷新数据)$/ })).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
         const positions = () => page.locator('.page-content > .page-heading, .page-content > .card, .developer-applications-grid, .authorized-application-list').evaluateAll((elements) =>
@@ -376,18 +493,23 @@ test('reuses account and administration reads, preserves drafts and scroll, and 
     await page.clock.install();
     await page.goto('/en-us/account/emails');
     await expect(page.getByText('alpha-v1@loginflare.test', { exact: true })).toBeVisible();
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Profile', exact: true }).click();
     expect(server.count(page, '/api/auth/get-session')).toBe(1);
     await page.getByLabel('Display name', { exact: true }).fill('Unsaved profile');
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Email addresses', exact: true }).click();
     await expect(page.getByText('alpha-v1@loginflare.test', { exact: true })).toBeVisible();
     expect(server.count(page, '/api/auth/emails')).toBe(1);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Profile', exact: true }).click();
     await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('Unsaved profile');
     server.state.actor!.user.name = 'Updated on server';
     const beforeProfileReturn = server.count(page, '/api/auth/get-session');
     await page.clock.fastForward(16_000);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Email addresses', exact: true }).click();
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Profile', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Account menu', exact: true })).toHaveAttribute('aria-description', 'Updated on server');
     expect(server.count(page, '/api/auth/get-session')).toBe(beforeProfileReturn + 1);
@@ -410,6 +532,7 @@ test('reuses account and administration reads, preserves drafts and scroll, and 
     expect(server.count(page, '/api/admin/users')).toBe(1);
 
     await switchArea(page, 'Developer center');
+    await openNavigation(page);
     await page.getByRole('link', { name: 'My applications', exact: true }).click();
     await page.getByRole('link', { name: 'Cache application', exact: true }).click();
     await page.getByLabel('Application name', { exact: true }).fill('Unsaved application');
@@ -418,7 +541,7 @@ test('reuses account and administration reads, preserves drafts and scroll, and 
     await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('Unsaved application');
     expect(server.count(page, `/api/developer/applications/${server.clientId}`)).toBe(1);
     await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Application updated');
+    await expect(page.getByRole('status').filter({ hasText: 'Application updated' })).toBeVisible();
     await page.getByRole('link', { name: 'Back to applications', exact: true }).click();
     await expect(page.getByRole('link', { name: 'Unsaved application', exact: true })).toBeVisible();
     expect(server.count(page, '/api/developer/applications')).toBe(2);
@@ -486,6 +609,7 @@ test('clears private data across tabs and ignores a late response from the previ
     await expect(page).toHaveURL('/en-us/account');
     let release!: () => void;
     server.state.emailGate = new Promise<void>((resolve) => { release = resolve; });
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Email addresses', exact: true }).click();
     await expect.poll(() => server.count(page, '/api/auth/emails')).toBe(2);
     await page.getByRole('button', { name: 'Account menu', exact: true }).click();
@@ -498,6 +622,7 @@ test('clears private data across tabs and ignores a late response from the previ
     await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await expect(page).toHaveURL('/en-us/account');
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Email addresses', exact: true }).click();
     await expect(page.getByText('beta-v1@loginflare.test', { exact: true })).toBeVisible();
     release();
@@ -514,6 +639,7 @@ test('ignores delayed operation feedback after leaving its page', async ({ page,
     server.state.writeGate = new Promise<void>((resolve) => { release = resolve; });
     await page.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect.poll(() => server.count(page, '/api/auth/update-user', 'POST')).toBe(1);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Sessions', exact: true }).click();
     await expect(page).toHaveURL('/en-us/account/sessions');
     const response = page.waitForResponse((result) => result.url().endsWith('/api/auth/update-user'));
@@ -566,6 +692,7 @@ test('keeps newer edits after saving and clears sensitive inputs on page departu
     release(); server.state.writeGate = undefined;
     await expect(page.getByRole('button', { name: 'Account menu', exact: true })).toHaveAttribute('aria-description', 'First revision');
     await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('Second revision');
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Security', exact: true }).click();
     await page.getByRole('button', { name: 'Change password', exact: true }).click();
     const passwordDialog = page.locator('md-dialog.form-dialog');
@@ -577,11 +704,13 @@ test('keeps newer edits after saving and clears sensitive inputs on page departu
     await expect(passwordDialog.getByLabel('Current password', { exact: true })).toHaveValue('');
     await passwordDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(passwordDialog).toHaveCount(0);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Profile', exact: true }).click();
     await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('Second revision');
     await page.reload();
     await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('First revision');
     await switchArea(page, 'Developer center');
+    await openNavigation(page);
     await page.getByRole('link', { name: 'My applications', exact: true }).click();
     await page.getByRole('link', { name: 'Cache application', exact: true }).click();
     await page.getByRole('button', { name: 'Rotate client secret', exact: true }).click();
@@ -606,8 +735,10 @@ test('removes administration state after permissions are revoked without retryin
     await expect(page.getByRole('link', { name: 'Cache application', exact: true })).toBeVisible();
     server.state.actor!.user.role = 'user'; server.state.forbiddenApplications = true;
     await page.clock.fastForward(61_000);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Users', exact: true }).click();
     await expect(page.locator('tbody tr')).toHaveCount(20);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Applications', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Access restricted', exact: true })).toBeVisible();
     expect(server.count(page, '/api/admin/applications')).toBe(2);
@@ -669,7 +800,9 @@ test('honors Retry-After across remounts and visibility changes even without cac
     await page.goto('/en-us/account/emails');
     await expect(page.getByRole('alert')).toBeVisible();
     expect(server.count(page, '/api/auth/emails')).toBe(1);
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Profile', exact: true }).click();
+    await openNavigation(page);
     await page.getByRole('link', { name: 'Email addresses', exact: true }).click();
     await expect(page.getByRole('alert')).toBeVisible();
     await visibility(page, false); await visibility(page, true);
